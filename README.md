@@ -1,5 +1,5 @@
-## InfraMind AI - Intelligent Cloud Infrastructure Monitoring
 
+<<<<<<< HEAD
 This app was created using https://getmocha.com.
 Need help or want to join the community? Join our [Discord](https://discord.gg/shDEGBSe2d).
 
@@ -33,3 +33,5 @@ APP_BASE_URL="http://127.0.0.1:5173"
 
 If `RESEND_API_KEY` is not set, signup still works and email sending is skipped.
 If you use `onboarding@resend.dev`, delivery can be restricted by your Resend account mode. If mail does not arrive, use a verified sender domain and check spam.
+=======
+>>>>>>> c9028400d2784b0360e7c997652db62f12b7357a
