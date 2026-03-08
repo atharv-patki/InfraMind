@@ -16,15 +16,19 @@ type AuthUser = {
   firstName: string;
   lastName: string;
   email: string;
+  plan: SubscriptionPlan;
   createdAt: string;
   updatedAt: string;
 };
+
+type SubscriptionPlan = "starter" | "pro" | "enterprise";
 
 type UserCredentialsRow = {
   id: string;
   first_name: string;
   last_name: string;
   email: string;
+  plan: SubscriptionPlan;
   password_hash: string;
   password_salt: string;
   created_at: string;
@@ -36,6 +40,7 @@ type SessionUserRow = {
   firstName: string;
   lastName: string;
   email: string;
+  plan: SubscriptionPlan;
   createdAt: string;
   updatedAt: string;
 };
@@ -117,6 +122,7 @@ app.post("/api/auth/register", async (c) => {
     const lastName = stringField(body, "lastName").trim();
     const email = normalizeEmail(stringField(body, "email"));
     const password = stringField(body, "password");
+    const plan = normalizePlan(stringField(body, "plan"));
 
     if (!firstName || !lastName || !email || !password) {
       return c.json({ error: "All fields are required." }, 400);
@@ -143,11 +149,11 @@ app.post("/api/auth/register", async (c) => {
     await c.env.DB.prepare(
       `
         INSERT INTO users (
-          id, first_name, last_name, email, password_hash, password_salt, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+          id, first_name, last_name, email, plan, password_hash, password_salt, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
       `
     )
-      .bind(userId, firstName, lastName, email, passwordHash, salt, now, now)
+      .bind(userId, firstName, lastName, email, plan, passwordHash, salt, now, now)
       .run();
 
     const welcomeEmailStatus = getWelcomeEmailStatus(c.env);
@@ -177,6 +183,7 @@ app.post("/api/auth/register", async (c) => {
           firstName,
           lastName,
           email,
+          plan,
           createdAt: now,
           updatedAt: now,
         } satisfies AuthUser,
@@ -213,6 +220,7 @@ app.post("/api/auth/login", async (c) => {
           first_name,
           last_name,
           email,
+          plan,
           password_hash,
           password_salt,
           created_at,
@@ -1074,6 +1082,8 @@ async function ensureSchema(env: Env): Promise<void> {
     "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
   ).run();
 
+  await ensureUsersPlanColumn(env);
+
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
   ).run();
@@ -1124,13 +1134,14 @@ async function ensureSchema(env: Env): Promise<void> {
 
 function toAuthUser(row: Pick<
   UserCredentialsRow,
-  "id" | "first_name" | "last_name" | "email" | "created_at" | "updated_at"
+  "id" | "first_name" | "last_name" | "email" | "plan" | "created_at" | "updated_at"
 >): AuthUser {
   return {
     id: row.id,
     firstName: row.first_name,
     lastName: row.last_name,
     email: row.email,
+    plan: normalizePlan(row.plan),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1150,6 +1161,7 @@ async function getUserFromSession(c: HonoContext): Promise<AuthUser | null> {
         u.first_name as firstName,
         u.last_name as lastName,
         u.email as email,
+        u.plan as plan,
         u.created_at as createdAt,
         u.updated_at as updatedAt
       FROM sessions s
@@ -1168,7 +1180,23 @@ async function getUserFromSession(c: HonoContext): Promise<AuthUser | null> {
     return null;
   }
 
-  return row;
+  return {
+    ...row,
+    plan: normalizePlan(row.plan),
+  };
+}
+
+async function ensureUsersPlanColumn(env: Env): Promise<void> {
+  const result = await env.DB.prepare("PRAGMA table_info(users)").all<{
+    name: string;
+  }>();
+  const columns = result.results ?? [];
+  const hasPlanColumn = columns.some((column) => column.name === "plan");
+  if (hasPlanColumn) return;
+
+  await env.DB.prepare(
+    "ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'pro'"
+  ).run();
 }
 
 async function createSession(c: HonoContext, userId: string): Promise<void> {
@@ -1213,6 +1241,13 @@ function getRequestProtocol(c: HonoContext): "http" | "https" {
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizePlan(value: string): SubscriptionPlan {
+  if (value === "pro" || value === "enterprise" || value === "starter") {
+    return value;
+  }
+  return "pro";
 }
 
 function isValidEmail(value: string): boolean {

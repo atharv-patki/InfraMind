@@ -67,6 +67,7 @@ export default function Pricing() {
               price={annual ? 0 : 0}
               period={annual ? '/year' : '/month'}
               cta="Start Free"
+              ctaTo="/signup"
               ctaVariant="outline"
               features={[
                 { text: 'Up to 5 servers', included: true },
@@ -88,6 +89,7 @@ export default function Pricing() {
               price={annual ? 79 : 99}
               period={annual ? '/month, billed annually' : '/month'}
               cta="Start Free Trial"
+              ctaTo="/signup"
               ctaVariant="default"
               popular
               features={[
@@ -110,6 +112,7 @@ export default function Pricing() {
               price="Custom"
               period=""
               cta="Contact Sales"
+              ctaTo="/company#contact"
               ctaVariant="outline"
               features={[
                 { text: 'Unlimited servers', included: true },
@@ -229,12 +232,24 @@ interface PricingCardProps {
   price: number | string;
   period: string;
   cta: string;
+  ctaTo: string;
   ctaVariant: 'default' | 'outline';
   popular?: boolean;
   features: Array<{ text: string; included: boolean }>;
 }
 
-function PricingCard({ icon, name, description, price, period, cta, ctaVariant, popular, features }: PricingCardProps) {
+function PricingCard({
+  icon,
+  name,
+  description,
+  price,
+  period,
+  cta,
+  ctaTo,
+  ctaVariant,
+  popular,
+  features,
+}: PricingCardProps) {
   return (
     <div className={`relative rounded-2xl border ${popular ? 'border-primary shadow-lg shadow-primary/10' : 'border-border'} bg-card p-8`}>
       {popular && (
@@ -267,7 +282,7 @@ function PricingCard({ icon, name, description, price, period, cta, ctaVariant, 
         </div>
       </div>
 
-      <Link to="/signup">
+      <Link to={ctaTo}>
         <Button
           className={`w-full ${ctaVariant === 'default' ? 'bg-primary hover:bg-primary/90' : ''}`}
           variant={ctaVariant}

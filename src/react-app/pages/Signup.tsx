@@ -1,13 +1,15 @@
 import { type FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Activity, Bell, Brain, Check, Server } from "lucide-react";
 import { Button } from "@/react-app/components/ui/button";
 import { Input } from "@/react-app/components/ui/input";
 import { useAuth } from "@/react-app/context/AuthContext";
+import { getPlanLabel, normalizePlan, type SubscriptionPlan } from "@/react-app/lib/plans";
 
 export default function Signup() {
   const { isPending, register, isFetching } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -16,6 +18,7 @@ export default function Signup() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const selectedPlan = normalizePlan(searchParams.get("plan"));
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -43,11 +46,12 @@ export default function Signup() {
         lastName: lastName.trim(),
         email: email.trim(),
         password,
+        plan: selectedPlan,
       });
       const welcomeParam =
         result.welcomeEmailStatus === "disabled" ? "disabled" : "queued";
       navigate(
-        `/login?registered=1&welcome=${welcomeParam}&email=${encodeURIComponent(email.trim())}`,
+        `/login?registered=1&welcome=${welcomeParam}&email=${encodeURIComponent(email.trim())}&plan=${result.user.plan}`,
         { replace: true }
       );
     } catch (authError) {
@@ -123,6 +127,16 @@ export default function Signup() {
             <p className="mt-2 text-muted-foreground">
               Use your details to register
             </p>
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <span className="text-xs text-muted-foreground">Selected plan:</span>
+              <span className="inline-flex h-6 items-center rounded-full bg-primary/15 px-2.5 text-xs font-medium text-primary">
+                {getPlanLabel(selectedPlan)}
+              </span>
+              <Link to="/pricing" className="text-xs text-primary hover:underline">
+                Change
+              </Link>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">{planDescription(selectedPlan)}</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -212,4 +226,14 @@ export default function Signup() {
       </div>
     </div>
   );
+}
+
+function planDescription(plan: SubscriptionPlan): string {
+  if (plan === "enterprise") {
+    return "Enterprise onboarding includes full feature access and expanded limits.";
+  }
+  if (plan === "pro") {
+    return "Pro trial includes AI insights, auto-healing, and incident lifecycle modules.";
+  }
+  return "Starter includes core monitoring, infrastructure, metrics, and alert basics.";
 }

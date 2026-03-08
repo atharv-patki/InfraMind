@@ -1,8 +1,11 @@
+import { normalizePlan, type SubscriptionPlan } from "@/react-app/lib/plans";
+
 export type AuthUser = {
   id: string;
   firstName: string;
   lastName: string;
   email: string;
+  plan: SubscriptionPlan;
   createdAt: string;
   updatedAt: string;
 };
@@ -38,7 +41,7 @@ export async function loginWithPassword(payload: {
     throw new Error(data?.error ?? "Unable to sign in with these credentials.");
   }
 
-  return data.user;
+  return normalizeAuthUser(data.user);
 }
 
 export async function registerWithPassword(payload: {
@@ -46,6 +49,7 @@ export async function registerWithPassword(payload: {
   lastName: string;
   email: string;
   password: string;
+  plan?: SubscriptionPlan;
 }): Promise<RegisterResult> {
   const response = await fetch("/api/auth/register", {
     method: "POST",
@@ -62,7 +66,7 @@ export async function registerWithPassword(payload: {
   }
 
   return {
-    user: data.user,
+    user: normalizeAuthUser(data.user),
     message: data.message,
     welcomeEmailStatus: data.welcomeEmailStatus,
   };
@@ -82,7 +86,7 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
     throw new Error(data?.error ?? "Unable to fetch current user.");
   }
 
-  return data?.user ?? null;
+  return data?.user ? normalizeAuthUser(data.user) : null;
 }
 
 export async function logoutUser(): Promise<void> {
@@ -110,4 +114,11 @@ async function safeReadJson(response: Response): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+function normalizeAuthUser(user: AuthUser): AuthUser {
+  return {
+    ...user,
+    plan: normalizePlan(user.plan),
+  };
 }

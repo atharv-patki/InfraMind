@@ -15,12 +15,17 @@ import {
   type AuthUser,
   type RegisterResult,
 } from "@/react-app/lib/auth-client";
+import { normalizePlan } from "@/react-app/lib/plans";
+import type { SubscriptionPlan } from "@/react-app/lib/plans";
+
+const PLAN_OVERRIDE_KEY = "inframind_plan_override";
 
 type RegisterPayload = {
   firstName: string;
   lastName: string;
   email: string;
   password: string;
+  plan?: SubscriptionPlan;
 };
 
 type LoginPayload = {
@@ -50,7 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsFetching(true);
     try {
       const currentUser = await fetchCurrentUser();
-      setUser(currentUser);
+      setUser(applyPlanOverride(currentUser));
     } finally {
       setIsFetching(false);
     }
@@ -60,7 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsFetching(true);
     try {
       const currentUser = await loginWithPassword(payload);
-      setUser(currentUser);
+      setUser(applyPlanOverride(currentUser));
     } finally {
       setIsFetching(false);
     }
@@ -117,4 +122,13 @@ export function useAuth() {
     throw new Error("useAuth must be used within an AuthProvider.");
   }
   return context;
+}
+
+function applyPlanOverride(user: AuthUser | null): AuthUser | null {
+  if (!user) return null;
+  const override = window.localStorage.getItem(PLAN_OVERRIDE_KEY) ?? "pro";
+  return {
+    ...user,
+    plan: normalizePlan(override),
+  };
 }

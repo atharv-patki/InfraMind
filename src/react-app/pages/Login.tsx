@@ -5,6 +5,9 @@ import { Button } from "@/react-app/components/ui/button";
 import { Input } from "@/react-app/components/ui/input";
 import { useAuth } from "@/react-app/context/AuthContext";
 import { getSafeNextPath } from "@/react-app/lib/auth-client";
+import { getPlanLabel, normalizePlan } from "@/react-app/lib/plans";
+
+const PLAN_OVERRIDE_KEY = "inframind_plan_override";
 
 export default function Login() {
   const { isPending, login, isFetching } = useAuth();
@@ -19,6 +22,7 @@ export default function Login() {
   const nextPath = getSafeNextPath(searchParams.get("next"), "/app/overview");
   const isFreshRegistration = searchParams.get("registered") === "1";
   const welcomeStatus = searchParams.get("welcome");
+  const signupPlan = normalizePlan(searchParams.get("plan"));
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -30,6 +34,7 @@ export default function Login() {
     try {
       setIsSubmitting(true);
       setError("");
+      window.localStorage.setItem(PLAN_OVERRIDE_KEY, "pro");
       await login({ email: email.trim(), password });
       setIsRedirecting(true);
       await new Promise((resolve) => window.setTimeout(resolve, 650));
@@ -119,7 +124,7 @@ export default function Login() {
             {isFreshRegistration ? (
               <div className="space-y-1">
                 <p className="text-sm text-success">
-                  Account created successfully. Please sign in.
+                  {getPlanLabel(signupPlan)} account created successfully. Please sign in.
                 </p>
                 {welcomeStatus === "queued" ? (
                   <p className="text-xs text-muted-foreground">

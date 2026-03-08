@@ -10,6 +10,7 @@ import {
   Clock4,
   LayoutDashboard,
   LineChart,
+  Loader2,
   Menu,
   LogOut,
   Settings,
@@ -22,11 +23,17 @@ import { Badge } from "@/react-app/components/ui/badge";
 import { useAuth } from "@/react-app/context/AuthContext";
 import { useAwsOps } from "@/react-app/context/AwsOpsContext";
 import { GlobalOpsBanner } from "@/react-app/components/dashboard/GlobalOpsBanner";
+import {
+  getPlanLabel,
+  hasPlanAccess,
+  type SubscriptionPlan,
+} from "@/react-app/lib/plans";
 
 type NavItem = {
   to: string;
   label: string;
   icon: LucideIcon;
+  minPlan?: SubscriptionPlan;
 };
 
 const navItems: NavItem[] = [
@@ -34,9 +41,9 @@ const navItems: NavItem[] = [
   { to: "/app/infrastructure", label: "Infrastructure", icon: Server },
   { to: "/app/metrics", label: "Metrics", icon: LineChart },
   { to: "/app/alerts", label: "Alerts", icon: Bell },
-  { to: "/app/autohealing", label: "Auto-Healing", icon: WandSparkles },
-  { to: "/app/aiinsights", label: "AI Insights", icon: Brain },
-  { to: "/app/incidents", label: "Incidents", icon: Clock4 },
+  { to: "/app/autohealing", label: "Auto-Healing", icon: WandSparkles, minPlan: "pro" },
+  { to: "/app/aiinsights", label: "AI Insights", icon: Brain, minPlan: "pro" },
+  { to: "/app/incidents", label: "Incidents", icon: Clock4, minPlan: "pro" },
   { to: "/app/docs", label: "Docs", icon: BookOpen },
   { to: "/app/settings", label: "Settings", icon: Settings },
 ];
@@ -83,9 +90,11 @@ const pageMeta: Record<string, { title: string; description: string }> = {
 export default function DashboardLayout() {
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const { user, logout } = useAuth();
   const { config } = useAwsOps();
   const displayName = user?.firstName ?? "User";
+  const userPlan = user?.plan ?? "starter";
 
   const activePage = useMemo(() => {
     const match = Object.entries(pageMeta).find(([prefix]) =>
@@ -94,11 +103,33 @@ export default function DashboardLayout() {
     return match?.[1] ?? pageMeta["/app/overview"];
   }, [pathname]);
 
+  const handleSignOut = async () => {
+    if (isSigningOut) return;
+    try {
+      setIsSigningOut(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 550));
+      await logout();
+    } finally {
+      setIsSigningOut(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
+      {isSigningOut ? (
+        <div className="fixed inset-0 z-[80] bg-background/90 backdrop-blur-sm flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-12 h-12 rounded-xl bg-primary/15 text-primary flex items-center justify-center mx-auto">
+              <Loader2 className="w-6 h-6 animate-spin" />
+            </div>
+            <p className="mt-3 text-sm font-medium">Signing out...</p>
+            <p className="mt-1 text-xs text-muted-foreground">Closing your secure session</p>
+          </div>
+        </div>
+      ) : null}
       <div className="flex">
         <aside className="hidden lg:flex fixed inset-y-0 left-0 z-40 w-72 flex-col border-r border-border bg-card">
-          <SidebarContent />
+          <SidebarContent userPlan={userPlan} />
         </aside>
 
         <div className="flex-1 lg:pl-72 min-w-0">
@@ -128,6 +159,9 @@ export default function DashboardLayout() {
                 <Badge variant="secondary" className="inline-flex">
                   {displayName}
                 </Badge>
+                <Badge variant="outline" className="hidden sm:inline-flex">
+                  {getPlanLabel(userPlan)}
+                </Badge>
                 {config ? (
                   <Badge variant="outline" className="hidden sm:inline-flex">
                     {config.region}
@@ -141,12 +175,15 @@ export default function DashboardLayout() {
                   variant="ghost"
                   size="sm"
                   className="hidden sm:inline-flex"
-                  onClick={() => {
-                    logout();
-                  }}
+                  onClick={() => void handleSignOut()}
+                  disabled={isSigningOut}
                 >
-                  <LogOut className="w-4 h-4 mr-1.5" />
-                  Sign Out
+                  {isSigningOut ? (
+                    <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <LogOut className="w-4 h-4 mr-1.5" />
+                  )}
+                  {isSigningOut ? "Signing out..." : "Sign Out"}
                 </Button>
                 <Button asChild variant="outline" size="sm" className="hidden sm:inline-flex">
                   <Link to="/app/docs">
@@ -189,7 +226,7 @@ export default function DashboardLayout() {
                 <X className="w-4 h-4" />
               </Button>
             </div>
-            <SidebarContent onNavigate={() => setMobileOpen(false)} />
+            <SidebarContent onNavigate={() => setMobileOpen(false)} userPlan={userPlan} />
           </aside>
         </div>
       )}
@@ -197,7 +234,13 @@ export default function DashboardLayout() {
   );
 }
 
-function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+function SidebarContent({
+  onNavigate,
+  userPlan,
+}: {
+  onNavigate?: () => void;
+  userPlan: SubscriptionPlan;
+}) {
   return (
     <>
       <div className="h-16 px-5 border-b border-border flex items-center">
@@ -221,24 +264,38 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
         <nav className="space-y-1">
           {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              onClick={onNavigate}
-              className={({ isActive }) =>
-                `group flex items-center justify-between rounded-xl px-3 py-2.5 text-sm transition-colors ${
-                  isActive
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                }`
-              }
-            >
-              <span className="inline-flex items-center gap-2.5">
-                <item.icon className="w-4 h-4" />
-                {item.label}
-              </span>
-              <ChevronRight className="w-4 h-4 opacity-40 transition-opacity group-hover:opacity-80" />
-            </NavLink>
+            hasPlanAccess(userPlan, item.minPlan ?? "starter") ? (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                onClick={onNavigate}
+                className={({ isActive }) =>
+                  `group flex items-center justify-between rounded-xl px-3 py-2.5 text-sm transition-colors ${
+                    isActive
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  }`
+                }
+              >
+                <span className="inline-flex items-center gap-2.5">
+                  <item.icon className="w-4 h-4" />
+                  {item.label}
+                </span>
+                <ChevronRight className="w-4 h-4 opacity-40 transition-opacity group-hover:opacity-80" />
+              </NavLink>
+            ) : (
+              <div
+                key={item.to}
+                className="group flex items-center justify-between rounded-xl px-3 py-2.5 text-sm text-muted-foreground/70 bg-secondary/40 cursor-not-allowed"
+                title={`${item.label} is available on Pro plan`}
+              >
+                <span className="inline-flex items-center gap-2.5">
+                  <item.icon className="w-4 h-4" />
+                  {item.label}
+                </span>
+                <Badge className="bg-primary/15 text-primary">Pro</Badge>
+              </div>
+            )
           ))}
         </nav>
       </div>
