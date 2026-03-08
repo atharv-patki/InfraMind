@@ -1,5 +1,8 @@
 import { BrowserRouter as Router, Navigate, Route, Routes } from "react-router";
 import { AuthProvider } from "@/react-app/context/AuthContext";
+import { ThemeProvider } from "@/react-app/context/ThemeContext";
+import { AwsOpsProvider } from "@/react-app/context/AwsOpsContext";
+import { ToastProvider } from "@/react-app/context/ToastContext";
 import HomePage from "@/react-app/pages/Home";
 import FeaturesPage from "@/react-app/pages/Features";
 import PricingPage from "@/react-app/pages/Pricing";
@@ -17,35 +20,43 @@ import AutoHealingPage from "@/react-app/pages/app/AutoHealing";
 import AIInsightsPage from "@/react-app/pages/app/AIInsights";
 import AppDocsPage from "@/react-app/pages/app/Docs";
 import SettingsPage from "@/react-app/pages/app/Settings";
+import IncidentHistoryPage from "@/react-app/pages/app/IncidentHistory";
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Router>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/features" element={<FeaturesPage />} />
-          <Route path="/pricing" element={<PricingPage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/signup" element={<SignupPage />} />
-          <Route path="/auth/callback" element={<AuthCallbackPage />} />
-          <Route path="/docs" element={<Docs />} />
-          <Route element={<ProtectedRoute />}>
-            <Route path="/app" element={<DashboardLayout />}>
-              <Route index element={<Navigate to="/app/overview" replace />} />
-              <Route path="overview" element={<OverviewPage />} />
-              <Route path="infrastructure" element={<InfrastructurePage />} />
-              <Route path="metrics" element={<MetricsPage />} />
-              <Route path="alerts" element={<AlertsPage />} />
-              <Route path="autohealing" element={<AutoHealingPage />} />
-              <Route path="aiinsights" element={<AIInsightsPage />} />
-              <Route path="docs" element={<AppDocsPage />} />
-              <Route path="settings" element={<SettingsPage />} />
-            </Route>
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Router>
-    </AuthProvider>
+    <ThemeProvider>
+      <ToastProvider>
+        <AwsOpsProvider>
+          <AuthProvider>
+            <Router>
+              <Routes>
+                <Route path="/" element={<HomePage />} />
+                <Route path="/features" element={<FeaturesPage />} />
+                <Route path="/pricing" element={<PricingPage />} />
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/signup" element={<SignupPage />} />
+                <Route path="/auth/callback" element={<AuthCallbackPage />} />
+                <Route path="/docs" element={<Docs />} />
+                <Route element={<ProtectedRoute />}>
+                  <Route path="/app" element={<DashboardLayout />}>
+                    <Route index element={<Navigate to="/app/overview" replace />} />
+                    <Route path="overview" element={<OverviewPage />} />
+                    <Route path="infrastructure" element={<InfrastructurePage />} />
+                    <Route path="metrics" element={<MetricsPage />} />
+                    <Route path="alerts" element={<AlertsPage />} />
+                    <Route path="autohealing" element={<AutoHealingPage />} />
+                    <Route path="aiinsights" element={<AIInsightsPage />} />
+                    <Route path="incidents" element={<IncidentHistoryPage />} />
+                    <Route path="docs" element={<AppDocsPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                  </Route>
+                </Route>
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </Router>
+          </AuthProvider>
+        </AwsOpsProvider>
+      </ToastProvider>
+    </ThemeProvider>
   );
 }

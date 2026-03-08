@@ -7,6 +7,7 @@ import {
   BookOpen,
   Brain,
   ChevronRight,
+  Clock4,
   LayoutDashboard,
   LineChart,
   Menu,
@@ -19,6 +20,8 @@ import {
 import { Button } from "@/react-app/components/ui/button";
 import { Badge } from "@/react-app/components/ui/badge";
 import { useAuth } from "@/react-app/context/AuthContext";
+import { useAwsOps } from "@/react-app/context/AwsOpsContext";
+import { GlobalOpsBanner } from "@/react-app/components/dashboard/GlobalOpsBanner";
 
 type NavItem = {
   to: string;
@@ -33,6 +36,7 @@ const navItems: NavItem[] = [
   { to: "/app/alerts", label: "Alerts", icon: Bell },
   { to: "/app/autohealing", label: "Auto-Healing", icon: WandSparkles },
   { to: "/app/aiinsights", label: "AI Insights", icon: Brain },
+  { to: "/app/incidents", label: "Incidents", icon: Clock4 },
   { to: "/app/docs", label: "Docs", icon: BookOpen },
   { to: "/app/settings", label: "Settings", icon: Settings },
 ];
@@ -62,6 +66,10 @@ const pageMeta: Record<string, { title: string; description: string }> = {
     title: "AI Insights",
     description: "Analyze anomalies, forecasts, and AI-generated recommendations.",
   },
+  "/app/incidents": {
+    title: "Incident History",
+    description: "Audit incident timelines, actions, and verification outcomes.",
+  },
   "/app/docs": {
     title: "Platform Documentation",
     description: "Implementation guides, route references, and planned API contracts.",
@@ -76,6 +84,7 @@ export default function DashboardLayout() {
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const { user, logout } = useAuth();
+  const { config } = useAwsOps();
   const displayName = user?.firstName ?? "User";
 
   const activePage = useMemo(() => {
@@ -119,9 +128,14 @@ export default function DashboardLayout() {
                 <Badge variant="secondary" className="inline-flex">
                   {displayName}
                 </Badge>
+                {config ? (
+                  <Badge variant="outline" className="hidden sm:inline-flex">
+                    {config.region}
+                  </Badge>
+                ) : null}
                 <Badge variant="outline" className="hidden sm:inline-flex gap-1.5">
                   <span className="size-1.5 rounded-full bg-success" />
-                  Live Demo
+                  AWS Ops
                 </Badge>
                 <Button
                   variant="ghost"
@@ -144,7 +158,8 @@ export default function DashboardLayout() {
             </div>
           </header>
 
-          <main className="p-4 sm:p-6 lg:p-8">
+          <main className="p-4 sm:p-6 lg:p-8 space-y-4">
+            <GlobalOpsBanner />
             <Outlet />
           </main>
         </div>

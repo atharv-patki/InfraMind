@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Brain,
   CircleAlert,
@@ -10,81 +10,46 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/react-app/components/ui/card";
 import { Badge } from "@/react-app/components/ui/badge";
 import { Button } from "@/react-app/components/ui/button";
-
-type Severity = "High" | "Medium" | "Low";
-
-type Anomaly = {
-  id: string;
-  metric: string;
-  service: string;
-  confidence: number;
-  severity: Severity;
-  summary: string;
-};
-
-type Recommendation = {
-  id: string;
-  title: string;
-  impact: string;
-  priority: Severity;
-  done: boolean;
-};
-
-const anomalies: Anomaly[] = [
-  {
-    id: "an-11",
-    metric: "CPU saturation spike",
-    service: "prod-api-02",
-    confidence: 93,
-    severity: "High",
-    summary: "CPU patterns deviated from weekday baseline for 14 minutes.",
-  },
-  {
-    id: "an-08",
-    metric: "Write latency drift",
-    service: "db-primary-01",
-    confidence: 87,
-    severity: "Medium",
-    summary: "Sustained latency increase detected during peak batch workloads.",
-  },
-  {
-    id: "an-06",
-    metric: "Ingress traffic variance",
-    service: "edge-gateway-03",
-    confidence: 79,
-    severity: "Low",
-    summary: "Traffic volume above expected seasonal envelope.",
-  },
-];
-
-const forecastPoints = [62, 64, 63, 66, 68, 69, 71, 72, 75, 78, 81, 84, 86, 89, 92];
-
-const initialRecommendations: Recommendation[] = [
-  {
-    id: "rc-201",
-    title: "Scale API deployment by +2 instances during 12:00-17:00 UTC",
-    impact: "Expected 18% reduction in request latency during peak traffic.",
-    priority: "High",
-    done: false,
-  },
-  {
-    id: "rc-202",
-    title: "Increase DB connection pool and cap idle timeout to 60s",
-    impact: "Estimated 12% lower timeout rate for read-heavy bursts.",
-    priority: "Medium",
-    done: false,
-  },
-  {
-    id: "rc-203",
-    title: "Archive old log partitions every 6 hours",
-    impact: "Projected delay of disk saturation threshold by 3 weeks.",
-    priority: "Low",
-    done: false,
-  },
-];
+import {
+  getAIAnomalies,
+  getAIPredictions,
+  getAIRecommendations,
+  updateAIRecommendation,
+  type AIRecommendation as Recommendation,
+  type AISystemAnomaly as Anomaly,
+  type AISeverity as Severity,
+} from "@/react-app/lib/api";
 
 export default function AIInsightsPage() {
-  const [recommendations, setRecommendations] = useState(initialRecommendations);
+  const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
+  const [forecastPoints, setForecastPoints] = useState<number[]>([]);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  const loadAIData = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      setLoadError("");
+      const [nextAnomalies, nextPredictions, nextRecommendations] = await Promise.all([
+        getAIAnomalies(),
+        getAIPredictions(),
+        getAIRecommendations(),
+      ]);
+      setAnomalies(nextAnomalies);
+      setForecastPoints(nextPredictions);
+      setRecommendations(nextRecommendations);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load AI insights.";
+      setLoadError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAIData();
+  }, [loadAIData]);
 
   const completed = useMemo(
     () => recommendations.filter((item) => item.done).length,
@@ -93,17 +58,38 @@ export default function AIInsightsPage() {
 
   const highestRisk = useMemo(
     () => anomalies.reduce((max, item) => (item.confidence > max ? item.confidence : max), 0),
-    []
+    [anomalies]
   );
 
-  const toggleRecommendation = (id: string) => {
-    setRecommendations((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
-    );
+  const toggleRecommendation = async (id: string) => {
+    const target = recommendations.find((item) => item.id === id);
+    if (!target) return;
+
+    try {
+      await updateAIRecommendation(id, !target.done);
+      setRecommendations((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to update recommendation.";
+      setLoadError(message);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {loadError ? (
+        <Card>
+          <CardContent className="py-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button size="sm" variant="outline" onClick={() => void loadAIData()}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <section className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <InsightStat
           label="Anomalies Detected"
@@ -152,7 +138,11 @@ export default function AIInsightsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {anomalies.map((item) => (
+            {isLoading ? (
+              <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+                Loading anomaly data...
+              </div>
+            ) : anomalies.map((item) => (
               <article
                 key={item.id}
                 className="rounded-xl border border-border bg-secondary/30 p-4 space-y-3"
@@ -181,6 +171,11 @@ export default function AIInsightsPage() {
                 </div>
               </article>
             ))}
+            {!isLoading && anomalies.length === 0 ? (
+              <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+                No anomalies detected.
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -211,7 +206,11 @@ export default function AIInsightsPage() {
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
-          {recommendations.map((item) => (
+          {isLoading ? (
+            <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+              Loading recommendations...
+            </div>
+          ) : recommendations.map((item) => (
             <article
               key={item.id}
               className="rounded-xl border border-border bg-secondary/30 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4"
@@ -235,6 +234,11 @@ export default function AIInsightsPage() {
               </Button>
             </article>
           ))}
+          {!isLoading && recommendations.length === 0 ? (
+            <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+              No recommendations available.
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
@@ -288,6 +292,14 @@ function SeverityBadge({ severity }: { severity: Severity }) {
 }
 
 function ForecastChart({ points }: { points: number[] }) {
+  if (points.length === 0) {
+    return (
+      <div className="h-44 rounded-xl border border-border bg-secondary/30 flex items-center justify-center text-sm text-muted-foreground">
+        No forecast data
+      </div>
+    );
+  }
+
   const width = 620;
   const height = 190;
   const padding = 14;

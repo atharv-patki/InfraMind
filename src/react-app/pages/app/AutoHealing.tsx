@@ -1,252 +1,427 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Play, Plus, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/react-app/components/ui/card";
 import { Button } from "@/react-app/components/ui/button";
 import { Input } from "@/react-app/components/ui/input";
 import { Switch } from "@/react-app/components/ui/switch";
 import { Badge } from "@/react-app/components/ui/badge";
+import { Checkbox } from "@/react-app/components/ui/checkbox";
+import { DataStateCard } from "@/react-app/components/dashboard/DataStateCard";
+import { ConfirmActionDialog } from "@/react-app/components/dashboard/ConfirmActionDialog";
+import { PageSkeleton } from "@/react-app/components/dashboard/PageSkeleton";
+import { useAwsOps } from "@/react-app/context/AwsOpsContext";
+import { useToast } from "@/react-app/context/ToastContext";
+import {
+  createPlaybook,
+  deletePlaybook,
+  getPlaybooks,
+  runPlaybook,
+  updatePlaybookEnabled,
+} from "@/react-app/lib/aws-mock-service";
+import type { RecoveryActionType, RecoveryPlaybook } from "@/react-app/lib/aws-contracts";
 
-type RuleItem = {
-  id: string;
-  name: string;
-  trigger: string;
-  action: string;
-  cooldownMinutes: number;
-  enabled: boolean;
-  lastRun: string;
-  successRate: number;
-};
-
-const initialRules: RuleItem[] = [
-  {
-    id: "rule-1",
-    name: "Restart API Service on High CPU",
-    trigger: "CPU > 90% for 5 minutes on prod-api-*",
-    action: "Restart api service and flush worker queue",
-    cooldownMinutes: 15,
-    enabled: true,
-    lastRun: "3 hours ago",
-    successRate: 97,
-  },
-  {
-    id: "rule-2",
-    name: "Scale Worker Pool on Queue Spike",
-    trigger: "Queue depth > 2000 for 3 minutes",
-    action: "Add 2 worker replicas and rebalance queue consumers",
-    cooldownMinutes: 20,
-    enabled: true,
-    lastRun: "12 hours ago",
-    successRate: 93,
-  },
-  {
-    id: "rule-3",
-    name: "Clear Temp Logs on Disk Pressure",
-    trigger: "Disk utilization > 92% on /var",
-    action: "Archive and prune logs older than 7 days",
-    cooldownMinutes: 60,
-    enabled: false,
-    lastRun: "5 days ago",
-    successRate: 88,
-  },
-];
+const recoveryActions: RecoveryActionType[] = ["restart", "scale", "redeploy", "failover"];
 
 export default function AutoHealingPage() {
-  const [rules, setRules] = useState<RuleItem[]>(initialRules);
-  const [name, setName] = useState("");
-  const [trigger, setTrigger] = useState("");
-  const [action, setAction] = useState("");
-  const [cooldownMinutes, setCooldownMinutes] = useState("15");
+  const { config, isLoading: isConfigLoading } = useAwsOps();
+  const { pushToast } = useToast();
+
+  const [playbooks, setPlaybooks] = useState<RecoveryPlaybook[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<RecoveryPlaybook | null>(null);
+
+  const [name, setName] = useState("");
+  const [triggerCondition, setTriggerCondition] = useState("");
+  const [selectedActions, setSelectedActions] = useState<RecoveryActionType[]>(["restart"]);
+  const [cooldownSeconds, setCooldownSeconds] = useState("300");
+  const [verificationWindowSeconds, setVerificationWindowSeconds] = useState("90");
+  const [escalationTarget, setEscalationTarget] = useState("Platform SRE On-call");
+  const [formError, setFormError] = useState("");
+
+  const loadPlaybooks = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      setError("");
+      const data = await getPlaybooks();
+      setPlaybooks(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load playbooks.";
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!config) return;
+    if (config.connectionStatus === "disconnected" || config.connectionStatus === "permission_denied") {
+      return;
+    }
+    void loadPlaybooks();
+  }, [config, loadPlaybooks]);
 
   const summary = useMemo(() => {
-    const enabled = rules.filter((rule) => rule.enabled).length;
-    const disabled = rules.length - enabled;
+    const enabled = playbooks.filter((playbook) => playbook.enabled).length;
+    const disabled = playbooks.length - enabled;
     const averageSuccess =
-      rules.length === 0
+      playbooks.length === 0
         ? 0
-        : Math.round(rules.reduce((sum, rule) => sum + rule.successRate, 0) / rules.length);
+        : Math.round(
+            playbooks.reduce((sum, playbook) => sum + playbook.successRate, 0) / playbooks.length
+          );
     return { enabled, disabled, averageSuccess };
-  }, [rules]);
+  }, [playbooks]);
 
-  const addRule = () => {
-    const trimmedName = name.trim();
-    const trimmedTrigger = trigger.trim();
-    const trimmedAction = action.trim();
-    const parsedCooldown = Number(cooldownMinutes);
-
-    if (!trimmedName || !trimmedTrigger || !trimmedAction) {
-      setError("Name, trigger, and action are required.");
-      return;
-    }
-    if (Number.isNaN(parsedCooldown) || parsedCooldown <= 0) {
-      setError("Cooldown must be a positive number.");
-      return;
-    }
-
-    const newRule: RuleItem = {
-      id: `rule-${Date.now()}`,
-      name: trimmedName,
-      trigger: trimmedTrigger,
-      action: trimmedAction,
-      cooldownMinutes: parsedCooldown,
-      enabled: true,
-      lastRun: "Never",
-      successRate: 90,
-    };
-
-    setRules((prev) => [newRule, ...prev]);
-    setName("");
-    setTrigger("");
-    setAction("");
-    setCooldownMinutes("15");
-    setError("");
+  const handleActionToggle = (action: RecoveryActionType, checked: boolean) => {
+    setSelectedActions((prev) => {
+      if (checked) {
+        return prev.includes(action) ? prev : [...prev, action];
+      }
+      return prev.filter((item) => item !== action);
+    });
   };
 
-  const setRuleEnabled = (id: string, enabled: boolean) => {
-    setRules((prev) => prev.map((rule) => (rule.id === id ? { ...rule, enabled } : rule)));
+  const handleCreate = async () => {
+    const parsedCooldown = Number(cooldownSeconds);
+    const parsedVerification = Number(verificationWindowSeconds);
+
+    if (!name.trim() || !triggerCondition.trim()) {
+      setFormError("Playbook name and trigger condition are required.");
+      return;
+    }
+    if (selectedActions.length === 0) {
+      setFormError("Select at least one recovery action.");
+      return;
+    }
+    if (!Number.isFinite(parsedCooldown) || parsedCooldown <= 0) {
+      setFormError("Cooldown must be a positive number of seconds.");
+      return;
+    }
+    if (!Number.isFinite(parsedVerification) || parsedVerification <= 0) {
+      setFormError("Verification window must be a positive number of seconds.");
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      setFormError("");
+      const created = await createPlaybook({
+        name,
+        triggerCondition,
+        actions: selectedActions,
+        cooldownSeconds: parsedCooldown,
+        verificationWindowSeconds: parsedVerification,
+        escalationTarget,
+      });
+      setPlaybooks((prev) => [created, ...prev]);
+      setName("");
+      setTriggerCondition("");
+      setSelectedActions(["restart"]);
+      setCooldownSeconds("300");
+      setVerificationWindowSeconds("90");
+      setEscalationTarget("Platform SRE On-call");
+      pushToast("Playbook created.", "success");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to create playbook.";
+      setFormError(message);
+      pushToast(message, "error");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const runRule = (id: string) => {
-    setRules((prev) =>
-      prev.map((rule) =>
-        rule.id === id
-          ? {
-              ...rule,
-              lastRun: "Just now",
-              successRate: clamp(rule.successRate + randomInt(-2, 2), 70, 99),
-            }
-          : rule
-      )
+  const toggleEnabled = useCallback(
+    async (playbook: RecoveryPlaybook, enabled: boolean) => {
+      try {
+        await updatePlaybookEnabled({ playbookId: playbook.id, enabled });
+        setPlaybooks((prev) =>
+          prev.map((item) => (item.id === playbook.id ? { ...item, enabled } : item))
+        );
+        pushToast(`${playbook.name} ${enabled ? "enabled" : "disabled"}.`, "success");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to update playbook.";
+        setError(message);
+        pushToast(message, "error");
+      }
+    },
+    [pushToast]
+  );
+
+  const triggerRun = useCallback(
+    async (playbook: RecoveryPlaybook) => {
+      try {
+        await runPlaybook(playbook.id);
+        pushToast(`Playbook "${playbook.name}" started.`, "info");
+        await loadPlaybooks();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to run playbook.";
+        setError(message);
+        pushToast(message, "error");
+      }
+    },
+    [loadPlaybooks, pushToast]
+  );
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    try {
+      await deletePlaybook(deleteTarget.id);
+      setPlaybooks((prev) => prev.filter((item) => item.id !== deleteTarget.id));
+      pushToast(`Deleted playbook "${deleteTarget.name}".`, "success");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to delete playbook.";
+      setError(message);
+      pushToast(message, "error");
+    } finally {
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, pushToast]);
+
+  if (isConfigLoading || !config) {
+    return (
+      <DataStateCard
+        state="loading"
+        title="Loading playbook context"
+        detail="Checking AWS integration before loading auto-healing."
+      />
     );
-  };
+  }
 
-  const removeRule = (id: string) => {
-    setRules((prev) => prev.filter((rule) => rule.id !== id));
-  };
+  if (config.connectionStatus === "disconnected") {
+    return (
+      <DataStateCard
+        state="disconnected"
+        title="AWS account is disconnected"
+        detail="Connect AWS account to create auto-healing playbooks."
+      />
+    );
+  }
+
+  if (config.connectionStatus === "permission_denied") {
+    return (
+      <DataStateCard
+        state="permission"
+        title="Insufficient IAM permission"
+        detail="Playbooks require execution permissions for target services."
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <PageSkeleton cards={3} rows={5} />;
+  }
+
+  if (error) {
+    return (
+      <DataStateCard
+        state="error"
+        title="Auto-healing unavailable"
+        detail={error}
+        onRetry={() => void loadPlaybooks()}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <section className="grid sm:grid-cols-3 gap-4">
-        <MiniStat label="Enabled Rules" value={summary.enabled.toString()} tone="success" />
-        <MiniStat label="Disabled Rules" value={summary.disabled.toString()} tone="warning" />
-        <MiniStat label="Avg Success Rate" value={`${summary.averageSuccess}%`} tone="primary" />
+      <section className="grid gap-4 sm:grid-cols-3">
+        <StatCard label="Enabled Playbooks" value={`${summary.enabled}`} tone="success" />
+        <StatCard label="Disabled Playbooks" value={`${summary.disabled}`} tone="warning" />
+        <StatCard
+          label="Average Success Rate"
+          value={`${summary.averageSuccess}%`}
+          tone="primary"
+        />
       </section>
 
       <Card>
         <CardHeader className="border-b border-border/70">
-          <CardTitle>Create Auto-Healing Rule</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Define trigger conditions and automated remediation actions.
+          <CardTitle>Recovery Playbook Builder</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Configure trigger condition, ordered action chain, cooldown, verification, and escalation.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid md:grid-cols-2 gap-3">
+          <div className="grid gap-3 md:grid-cols-2">
             <Input
-              placeholder="Rule name"
+              placeholder="Playbook name"
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
             <Input
-              placeholder="Cooldown (minutes)"
-              type="number"
-              value={cooldownMinutes}
-              onChange={(event) => setCooldownMinutes(event.target.value)}
+              placeholder="Escalation target (team or channel)"
+              value={escalationTarget}
+              onChange={(event) => setEscalationTarget(event.target.value)}
             />
           </div>
+
           <Input
-            placeholder="Trigger condition (e.g., CPU > 90% for 5m)"
-            value={trigger}
-            onChange={(event) => setTrigger(event.target.value)}
+            placeholder="Trigger condition (e.g. Error rate > 5% for 3m)"
+            value={triggerCondition}
+            onChange={(event) => setTriggerCondition(event.target.value)}
           />
-          <Input
-            placeholder="Action to execute"
-            value={action}
-            onChange={(event) => setAction(event.target.value)}
-          />
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          <Button onClick={addRule}>
-            <Plus className="w-4 h-4 mr-1.5" />
-            Add Rule
+
+          <div className="rounded-xl border border-border bg-secondary/30 p-4">
+            <p className="text-sm font-medium">Action Chain</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Select one or more automated actions. They run in listed order.
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {recoveryActions.map((action) => {
+                const checked = selectedActions.includes(action);
+                return (
+                  <label
+                    key={action}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm"
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(value) => handleActionToggle(action, Boolean(value))}
+                    />
+                    <span className="capitalize">{action}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <Input
+              type="number"
+              min={30}
+              placeholder="Cooldown (seconds)"
+              value={cooldownSeconds}
+              onChange={(event) => setCooldownSeconds(event.target.value)}
+            />
+            <Input
+              type="number"
+              min={30}
+              placeholder="Verification window (seconds)"
+              value={verificationWindowSeconds}
+              onChange={(event) => setVerificationWindowSeconds(event.target.value)}
+            />
+          </div>
+
+          {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
+          <Button onClick={() => void handleCreate()} disabled={isSaving}>
+            <Plus className="mr-1.5 h-4 w-4" />
+            {isSaving ? "Creating..." : "Create Playbook"}
           </Button>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="border-b border-border/70">
-          <CardTitle>Automation Rules</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Toggle, run, and manage remediation workflows.
+          <CardTitle>Playbook Operations</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Trigger manual runs, toggle execution, and manage escalation workflows.
           </p>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {rules.map((rule) => (
-            <article
-              key={rule.id}
-              className="rounded-xl border border-border bg-secondary/30 p-4"
-            >
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <div>
-                  <h3 className="font-medium">{rule.name}</h3>
-                  <p className="text-xs text-muted-foreground mt-1">{rule.id}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {rule.enabled ? (
-                    <Badge className="bg-success/15 text-success hover:bg-success/20">
-                      Enabled
+        <CardContent className="space-y-3">
+          {playbooks.length === 0 ? (
+            <DataStateCard
+              state="empty"
+              title="No playbooks created"
+              detail="Create your first recovery playbook above."
+            />
+          ) : (
+            playbooks.map((playbook) => (
+              <article
+                key={playbook.id}
+                className="space-y-3 rounded-xl border border-border bg-secondary/30 p-4"
+              >
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="font-medium">{playbook.name}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{playbook.id}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Badge
+                      className={
+                        playbook.enabled
+                          ? "bg-success/15 text-success hover:bg-success/20"
+                          : "bg-warning/20 text-warning hover:bg-warning/25"
+                      }
+                    >
+                      {playbook.enabled ? "Enabled" : "Disabled"}
                     </Badge>
-                  ) : (
-                    <Badge variant="outline">Disabled</Badge>
-                  )}
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">Active</span>
-                    <Switch
-                      checked={rule.enabled}
-                      onCheckedChange={(checked) => setRuleEnabled(rule.id, checked)}
-                    />
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">Active</span>
+                      <Switch
+                        checked={playbook.enabled}
+                        onCheckedChange={(checked) => void toggleEnabled(playbook, checked)}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="mt-4 grid md:grid-cols-2 gap-3 text-sm">
-                <div className="rounded-lg bg-card border border-border px-3 py-2">
-                  <p className="text-xs text-muted-foreground">Trigger</p>
-                  <p className="mt-1">{rule.trigger}</p>
+                <div className="rounded-lg border border-border bg-card p-3 text-sm">
+                  <p className="text-xs text-muted-foreground">Trigger Condition</p>
+                  <p className="mt-1">{playbook.triggerCondition}</p>
                 </div>
-                <div className="rounded-lg bg-card border border-border px-3 py-2">
-                  <p className="text-xs text-muted-foreground">Action</p>
-                  <p className="mt-1">{rule.action}</p>
-                </div>
-              </div>
 
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-muted-foreground">
-                  Cooldown: {rule.cooldownMinutes} min • Last run: {rule.lastRun} • Success rate:{" "}
-                  {rule.successRate}%
+                <div className="rounded-lg border border-border bg-card p-3 text-sm">
+                  <p className="text-xs text-muted-foreground">Action Chain</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {playbook.actions.map((action, index) => (
+                      <div key={`${playbook.id}-${action}-${index}`} className="flex items-center gap-1.5">
+                        <Badge variant="outline" className="capitalize">
+                          {action}
+                        </Badge>
+                        {index < playbook.actions.length - 1 ? (
+                          <span className="text-xs text-muted-foreground">→</span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="outline" onClick={() => runRule(rule.id)}>
-                    <Play className="w-4 h-4 mr-1.5" />
+
+                <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+                  <p>Cooldown: {playbook.cooldownSeconds}s</p>
+                  <p>Verification: {playbook.verificationWindowSeconds}s</p>
+                  <p>Escalation: {playbook.escalationTarget}</p>
+                  <p>Success Rate: {playbook.successRate}%</p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => void triggerRun(playbook)}>
+                    <Play className="mr-1.5 h-4 w-4" />
                     Run Now
                   </Button>
                   <Button
-                    size="icon-sm"
+                    size="sm"
                     variant="ghost"
-                    onClick={() => removeRule(rule.id)}
-                    aria-label={`Delete ${rule.name}`}
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setDeleteTarget(playbook)}
                   >
-                    <Trash2 className="w-4 h-4 text-destructive" />
+                    <Trash2 className="mr-1.5 h-4 w-4" />
+                    Delete
                   </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Last run: {playbook.lastRun}
+                  </span>
                 </div>
-              </div>
-            </article>
-          ))}
+              </article>
+            ))
+          )}
         </CardContent>
       </Card>
+
+      <ConfirmActionDialog
+        open={Boolean(deleteTarget)}
+        title={deleteTarget ? `Delete "${deleteTarget.name}"?` : "Delete playbook"}
+        description="This removes the playbook definition from the dashboard."
+        confirmLabel="Delete"
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={() => void confirmDelete()}
+      />
     </div>
   );
 }
 
-function MiniStat({
+function StatCard({
   label,
   value,
   tone,
@@ -268,18 +443,12 @@ function MiniStat({
           <p className="text-sm text-muted-foreground">{label}</p>
           <p className="mt-1 text-2xl font-semibold">{value}</p>
         </div>
-        <span className={`h-8 px-3 rounded-lg text-sm font-medium inline-flex items-center ${toneClass[tone]}`}>
+        <span
+          className={`inline-flex h-8 items-center rounded-lg px-3 text-sm font-medium ${toneClass[tone]}`}
+        >
           {label}
         </span>
       </CardContent>
     </Card>
   );
-}
-
-function randomInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
 }
