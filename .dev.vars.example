@@ -1,4 +1,0 @@
-RESEND_API_KEY=your_resend_api_key_here
-WELCOME_EMAIL_FROM=InfraMind AI <onboarding@resend.dev>
-WELCOME_EMAIL_REPLY_TO=support@inframind.ai
-APP_BASE_URL=http://127.0.0.1:5173
