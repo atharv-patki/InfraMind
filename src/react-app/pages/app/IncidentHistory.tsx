@@ -21,7 +21,7 @@ import {
   appendIncidentNote,
   exportIncidentReport,
   getIncidentAuditRecords,
-} from "@/react-app/lib/aws-mock-service";
+} from "@/react-app/lib/aws-api";
 import type { IncidentAuditRecord } from "@/react-app/lib/aws-contracts";
 
 export default function IncidentHistoryPage() {

@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 
 const app = new Hono<{ Bindings: Env }>();
+const API_VERSION = "v1";
 
 const SESSION_COOKIE_NAME = "inframind_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
@@ -22,6 +23,11 @@ type AuthUser = {
 };
 
 type SubscriptionPlan = "starter" | "pro" | "enterprise";
+type WorkspaceRole = "owner" | "admin" | "engineer" | "viewer";
+type AuthTokenPurpose =
+  | "password_reset"
+  | "email_verification"
+  | "workspace_invite";
 
 type UserCredentialsRow = {
   id: string;
@@ -29,6 +35,7 @@ type UserCredentialsRow = {
   last_name: string;
   email: string;
   plan: SubscriptionPlan;
+  email_verified?: number;
   password_hash: string;
   password_salt: string;
   created_at: string;
@@ -41,6 +48,7 @@ type SessionUserRow = {
   lastName: string;
   email: string;
   plan: SubscriptionPlan;
+  emailVerified?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -66,8 +74,16 @@ type AlertRow = {
   source: string;
   severity: "Critical" | "Warning" | "Info";
   status: "Active" | "Resolved";
+  lifecycle_status?: AlertLifecycleStatus;
   created_at: string;
 };
+
+type AlertLifecycleStatus =
+  | "Detected"
+  | "Analyzing"
+  | "Recovering"
+  | "Resolved"
+  | "Escalated";
 
 type AutomationRuleRow = {
   id: string;
@@ -111,7 +127,126 @@ type AIRecommendationRow = {
   done: number;
 };
 
+type ServerResponseItem = {
+  id: string;
+  name: string;
+  ip: string;
+  region: string;
+  uptime: string;
+  cpu: number;
+  memory: number;
+  status: "Healthy" | "Warning" | "Critical";
+  lastHeartbeat: string;
+  createdAt: string;
+};
+
+type AlertResponseItem = {
+  id: string;
+  title: string;
+  source: string;
+  severity: "Critical" | "Warning" | "Info";
+  status: "Active" | "Resolved";
+  createdAt: string;
+};
+
+type RuleResponseItem = {
+  id: string;
+  name: string;
+  trigger: string;
+  action: string;
+  cooldownMinutes: number;
+  enabled: boolean;
+  lastRun: string;
+  successRate: number;
+  createdAt: string;
+};
+
+type AwsConnectionRow = {
+  user_id: string;
+  account_id: string;
+  region: string;
+  environment: "dev" | "staging" | "prod";
+  connection_status:
+    | "disconnected"
+    | "connected"
+    | "permission_denied"
+    | "partial_outage"
+    | "recovery_running";
+  auto_recovery_enabled: number;
+  channel_email: number;
+  channel_sms: number;
+  channel_slack: number;
+  channel_teams: number;
+  updated_at: string;
+};
+
+type AuditNoteRow = {
+  incident_id: string;
+  note: string;
+  updated_at: string;
+};
+
+type AuthTokenRow = {
+  id: string;
+  user_id: string;
+  purpose: AuthTokenPurpose;
+  token_hash: string;
+  expires_at: string;
+  consumed_at: string | null;
+  metadata: string;
+  created_at: string;
+};
+
+type WorkspaceRow = {
+  id: string;
+  name: string;
+  slug: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type NotificationDeliveryRow = {
+  id: string;
+  channel_type: "email" | "sms" | "slack" | "teams";
+  target: string;
+  status: "queued" | "sent" | "failed" | "dropped";
+  provider_message_id: string | null;
+  attempt_count: number;
+  error_message: string | null;
+  created_at: string;
+};
+
 let schemaInitialized = false;
+
+app.onError((error, c) => {
+  console.error("Unhandled API error:", error);
+  return c.json({ error: "Internal server error." }, 500);
+});
+
+app.use("*", async (c, next) => {
+  const startedAt = Date.now();
+  await next();
+  const durationMs = Date.now() - startedAt;
+  const isApiRoute = c.req.path.startsWith("/api/");
+  const isStreamRoute =
+    c.req.path === "/api/stream/metrics" || c.req.path === "/api/stream/alerts";
+  if (isApiRoute && !isStreamRoute) {
+    console.log(
+      `${c.req.method} ${c.req.path} -> ${c.res.status} (${durationMs}ms)`
+    );
+  }
+});
+
+app.get("/api/openapi.json", (c) => {
+  return c.json(getOpenApiSpec());
+});
+
+app.all("/api/v1/*", (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = c.req.path.replace(/^\/api\/v1/, "/api");
+  return c.redirect(url.toString(), 307);
+});
 
 app.post("/api/auth/register", async (c) => {
   try {
@@ -155,6 +290,8 @@ app.post("/api/auth/register", async (c) => {
     )
       .bind(userId, firstName, lastName, email, plan, passwordHash, salt, now, now)
       .run();
+
+    await ensureDefaultWorkspaceForUser(c.env, userId, `${firstName} ${lastName}`.trim());
 
     const welcomeEmailStatus = getWelcomeEmailStatus(c.env);
     if (welcomeEmailStatus === "queued") {
@@ -286,6 +423,1014 @@ app.post("/api/auth/logout", async (c) => {
   }
 });
 
+app.post("/api/auth/request-password-reset", async (c) => {
+  await ensureSchema(c.env);
+
+  const body = await readBody(c);
+  const email = normalizeEmail(stringField(body, "email"));
+  if (!email || !isValidEmail(email)) {
+    return c.json({ error: "Valid email is required." }, 400);
+  }
+
+  const user = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1 LIMIT 1")
+    .bind(email)
+    .first<{ id: string }>();
+  if (user) {
+    const created = await createAuthToken(c.env, user.id, "password_reset", 60 * 30, {
+      email,
+    });
+    return c.json({
+      success: true,
+      message: "Password reset token created.",
+      resetToken: created.token,
+      expiresAt: created.expiresAt,
+    });
+  }
+
+  return c.json({
+    success: true,
+    message: "If this email exists, a reset token has been created.",
+  });
+});
+
+app.post("/api/auth/reset-password", async (c) => {
+  await ensureSchema(c.env);
+
+  const body = await readBody(c);
+  const token = stringField(body, "token").trim();
+  const password = stringField(body, "password");
+
+  if (!token || !password) {
+    return c.json({ error: "Token and new password are required." }, 400);
+  }
+  if (password.length < 8) {
+    return c.json({ error: "Password must be at least 8 characters." }, 400);
+  }
+
+  const authToken = await consumeAuthToken(c.env, token, "password_reset");
+  if (!authToken) {
+    return c.json({ error: "Reset token is invalid or expired." }, 400);
+  }
+
+  const salt = generateRandomToken(16);
+  const passwordHash = await hashPassword(password, salt);
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(
+    `
+      UPDATE users
+      SET password_hash = ?1, password_salt = ?2, updated_at = ?3
+      WHERE id = ?4
+    `
+  )
+    .bind(passwordHash, salt, now, authToken.user_id)
+    .run();
+
+  await c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ?1")
+    .bind(authToken.user_id)
+    .run();
+
+  return c.json({ success: true, message: "Password updated successfully." });
+});
+
+app.post("/api/auth/request-email-verification", async (c) => {
+  await ensureSchema(c.env);
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+
+  const created = await createAuthToken(c.env, authUser.id, "email_verification", 60 * 60 * 24, {
+    email: authUser.email,
+  });
+
+  return c.json({
+    success: true,
+    message: "Verification token created.",
+    verificationToken: created.token,
+    expiresAt: created.expiresAt,
+  });
+});
+
+app.post("/api/auth/verify-email", async (c) => {
+  await ensureSchema(c.env);
+
+  const body = await readBody(c);
+  const token = stringField(body, "token").trim();
+  if (!token) {
+    return c.json({ error: "Verification token is required." }, 400);
+  }
+
+  const authToken = await consumeAuthToken(c.env, token, "email_verification");
+  if (!authToken) {
+    return c.json({ error: "Verification token is invalid or expired." }, 400);
+  }
+
+  await c.env.DB.prepare("UPDATE users SET email_verified = 1, updated_at = ?1 WHERE id = ?2")
+    .bind(new Date().toISOString(), authToken.user_id)
+    .run();
+
+  return c.json({ success: true, message: "Email verified successfully." });
+});
+
+app.get("/api/workspaces/me", async (c) => {
+  await ensureSchema(c.env);
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+
+  const membership = await ensureDefaultWorkspaceForUser(c.env, authUser.id);
+  const workspace = await c.env.DB.prepare(
+    "SELECT id, name, slug, created_by, created_at, updated_at FROM workspaces WHERE id = ?1 LIMIT 1"
+  )
+    .bind(membership.workspaceId)
+    .first<WorkspaceRow>();
+
+  return c.json({
+    workspace: workspace
+      ? {
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+          role: membership.role,
+        }
+      : null,
+  });
+});
+
+app.post("/api/workspaces/invitations", async (c) => {
+  await ensureSchema(c.env);
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+
+  const operator = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (operator instanceof Response) return operator;
+
+  const body = await readBody(c);
+  const inviteeEmail = normalizeEmail(stringField(body, "email"));
+  const role = normalizeWorkspaceRole(stringField(body, "role")) ?? "viewer";
+  if (!inviteeEmail || !isValidEmail(inviteeEmail)) {
+    return c.json({ error: "Valid invite email is required." }, 400);
+  }
+
+  const created = await createAuthToken(c.env, authUser.id, "workspace_invite", 60 * 60 * 24 * 7, {
+    workspaceId: operator.workspaceId,
+    role,
+    email: inviteeEmail,
+    invitedBy: authUser.id,
+  });
+
+  return c.json({
+    success: true,
+    invitationToken: created.token,
+    expiresAt: created.expiresAt,
+  });
+});
+
+app.post("/api/workspaces/invitations/:token/accept", async (c) => {
+  await ensureSchema(c.env);
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+
+  const token = c.req.param("token")?.trim();
+  if (!token) {
+    return c.json({ error: "Invitation token is required." }, 400);
+  }
+
+  const authToken = await consumeAuthToken(c.env, token, "workspace_invite");
+  if (!authToken) {
+    return c.json({ error: "Invitation token is invalid or expired." }, 400);
+  }
+
+  const metadata = parseJsonRecord(authToken.metadata);
+  const workspaceId = typeof metadata.workspaceId === "string" ? metadata.workspaceId : "";
+  const role = normalizeWorkspaceRole(typeof metadata.role === "string" ? metadata.role : "") ?? "viewer";
+  const invitedEmail = normalizeEmail(typeof metadata.email === "string" ? metadata.email : "");
+
+  if (!workspaceId || !invitedEmail) {
+    return c.json({ error: "Invitation token metadata is invalid." }, 400);
+  }
+  if (invitedEmail !== normalizeEmail(authUser.email)) {
+    return c.json({ error: "This invitation was issued for a different email." }, 403);
+  }
+
+  await upsertMembership(c.env, workspaceId, authUser.id, role, "active");
+
+  const workspace = await c.env.DB.prepare(
+    "SELECT id, name, slug, created_by, created_at, updated_at FROM workspaces WHERE id = ?1 LIMIT 1"
+  )
+    .bind(workspaceId)
+    .first<WorkspaceRow>();
+
+  return c.json({
+    success: true,
+    workspace: workspace
+      ? {
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+          role,
+        }
+      : null,
+  });
+});
+
+app.get("/api/aws/config", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  await ensureAwsConnection(c.env, authUser.id);
+
+  const config = await getAwsConfigForUser(c.env, authUser.id);
+  return c.json({ config });
+});
+
+app.put("/api/aws/config", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (permission instanceof Response) return permission;
+  await ensureAwsConnection(c.env, authUser.id);
+
+  const body = await readBody(c);
+  const accountId = stringField(body, "accountId").trim();
+  const region = stringField(body, "region").trim();
+  const environmentInput = stringField(body, "environment").trim();
+  const connectionStatusInput = stringField(body, "connectionStatus").trim();
+  const autoRecoveryEnabled = booleanField(body, "autoRecoveryEnabled", true);
+
+  const alertChannels =
+    body?.alertChannels && typeof body.alertChannels === "object"
+      ? (body.alertChannels as Record<string, unknown>)
+      : null;
+
+  await c.env.DB.prepare(
+    `
+      UPDATE aws_connections
+      SET
+        account_id = COALESCE(NULLIF(?1, ''), account_id),
+        region = COALESCE(NULLIF(?2, ''), region),
+        environment = CASE
+          WHEN ?3 IN ('dev','staging','prod') THEN ?3
+          ELSE environment
+        END,
+        connection_status = CASE
+          WHEN ?4 IN ('disconnected','connected','permission_denied','partial_outage','recovery_running') THEN ?4
+          ELSE connection_status
+        END,
+        auto_recovery_enabled = ?5,
+        channel_email = ?6,
+        channel_sms = ?7,
+        channel_slack = ?8,
+        channel_teams = ?9,
+        updated_at = ?10
+      WHERE user_id = ?11
+    `
+  )
+    .bind(
+      accountId,
+      region,
+      environmentInput,
+      connectionStatusInput,
+      autoRecoveryEnabled ? 1 : 0,
+      alertChannels ? (booleanFromUnknown(alertChannels.email, true) ? 1 : 0) : 1,
+      alertChannels ? (booleanFromUnknown(alertChannels.sms, false) ? 1 : 0) : 0,
+      alertChannels ? (booleanFromUnknown(alertChannels.slack, true) ? 1 : 0) : 1,
+      alertChannels ? (booleanFromUnknown(alertChannels.teams, false) ? 1 : 0) : 0,
+      new Date().toISOString(),
+      authUser.id
+    )
+    .run();
+
+  const config = await getAwsConfigForUser(c.env, authUser.id);
+  return c.json({ config });
+});
+
+app.post("/api/aws/connect", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (permission instanceof Response) return permission;
+  await ensureAwsConnection(c.env, authUser.id);
+
+  await c.env.DB.prepare(
+    `
+      UPDATE aws_connections
+      SET connection_status = 'connected', updated_at = ?1
+      WHERE user_id = ?2
+    `
+  )
+    .bind(new Date().toISOString(), authUser.id)
+    .run();
+
+  const config = await getAwsConfigForUser(c.env, authUser.id);
+  return c.json({ config });
+});
+
+app.post("/api/aws/disconnect", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (permission instanceof Response) return permission;
+  await ensureAwsConnection(c.env, authUser.id);
+
+  await c.env.DB.prepare(
+    `
+      UPDATE aws_connections
+      SET connection_status = 'disconnected', updated_at = ?1
+      WHERE user_id = ?2
+    `
+  )
+    .bind(new Date().toISOString(), authUser.id)
+    .run();
+
+  const config = await getAwsConfigForUser(c.env, authUser.id);
+  return c.json({ config });
+});
+
+app.get("/api/aws/overview", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const servers = await c.env.DB.prepare(
+    `SELECT id, name, ip, region, uptime, cpu, memory, status, last_heartbeat, created_at FROM servers`
+  ).all<ServerRow>();
+
+  const alerts = await c.env.DB.prepare(
+    `SELECT id, title, source, severity, status, lifecycle_status, created_at FROM alerts ORDER BY created_at DESC`
+  ).all<AlertRow>();
+
+  const allAlerts = (alerts.results ?? []) as AlertRow[];
+  const activeIncidents = allAlerts.filter((item) => item.status !== "Resolved").length;
+  const recoveriesToday =
+    allAlerts.filter((item: AlertRow) => item.status === "Resolved").length + 4;
+  const recovering = allAlerts.filter(
+    (item: AlertRow) => resolveLifecycleStatus(item) === "Recovering"
+  ).length;
+  const regions = buildOverviewRegions(servers.results ?? [], allAlerts);
+
+  return c.json({
+    overview: {
+      serviceHealthScore: clampNumber(98 - activeIncidents * 3, 60, 99),
+      activeIncidents,
+      recoveriesToday,
+      meanRecoveryTimeMinutes: clampNumber(8 + recovering * 2, 6, 26),
+      incidentTrend: [4, 5, 4, 6, 7, 4, 3, 5, 4, 6, 5, 3, 4, 3],
+      regions,
+    },
+  });
+});
+
+app.get("/api/aws/resources", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const serviceFilter = c.req.query("service") ?? "All";
+
+  const servers = await c.env.DB.prepare(
+    `
+      SELECT id, name, ip, region, uptime, cpu, memory, status, last_heartbeat, created_at
+      FROM servers
+      ORDER BY created_at DESC
+    `
+  ).all<ServerRow>();
+
+  const resources = (servers.results ?? []).map((server: ServerRow) =>
+    mapServerToInfrastructureResource(server)
+  );
+
+  return c.json({
+    resources:
+      serviceFilter === "All"
+        ? resources
+        : resources.filter((item: ReturnType<typeof mapServerToInfrastructureResource>) => item.type === serviceFilter),
+  });
+});
+
+app.post("/api/aws/resources/:id/actions", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+
+  const resourceId = c.req.param("id");
+  const body = await readBody(c);
+  const action = stringField(body, "action").trim();
+  if (!resourceId || !["restart", "scale", "redeploy", "failover"].includes(action)) {
+    return c.json({ error: "Invalid resource action request." }, 400);
+  }
+
+  const server = await c.env.DB.prepare(
+    `SELECT id, cpu, memory, status FROM servers WHERE id = ?1 LIMIT 1`
+  )
+    .bind(resourceId)
+    .first<{ id: string; cpu: number; memory: number; status: string }>();
+  if (!server) {
+    return c.json({ error: "Resource not found." }, 404);
+  }
+
+  let nextCpu = server.cpu;
+  let nextMemory = server.memory;
+  let nextStatus = server.status;
+
+  if (action === "restart" || action === "redeploy") {
+    nextCpu = clampNumber(server.cpu - 12, 10, 95);
+    nextMemory = clampNumber(server.memory - 10, 10, 95);
+    nextStatus = "Healthy";
+  } else if (action === "scale") {
+    nextCpu = clampNumber(server.cpu - 8, 10, 95);
+    nextMemory = clampNumber(server.memory - 6, 10, 95);
+    nextStatus = server.status === "Critical" ? "Warning" : server.status;
+  }
+
+  await c.env.DB.prepare(
+    `
+      UPDATE servers
+      SET cpu = ?1, memory = ?2, status = ?3, last_heartbeat = ?4
+      WHERE id = ?5
+    `
+  )
+    .bind(nextCpu, nextMemory, nextStatus, "just now", resourceId)
+    .run();
+
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "resource.quick_action",
+    entityType: "resource",
+    entityId: resourceId,
+    metadata: { action, nextCpu, nextMemory, nextStatus },
+  });
+
+  return c.json({ success: true });
+});
+
+app.get("/api/aws/incidents", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const alerts = await c.env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, lifecycle_status, created_at
+      FROM alerts
+      ORDER BY created_at DESC
+    `
+  ).all<AlertRow>();
+
+  const incidents = (alerts.results ?? []).map((alert: AlertRow) =>
+    mapAlertToIncident(alert)
+  );
+
+  return c.json({ incidents });
+});
+
+app.put("/api/aws/incidents/:id/status", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+
+  const id = c.req.param("id");
+  const body = await readBody(c);
+  const status = stringField(body, "status").trim();
+  if (!id || !isValidIncidentStatus(status)) {
+    return c.json({ error: "Invalid incident status update." }, 400);
+  }
+
+  await updateIncidentLifecycleStatus(c.env, id, status as AlertLifecycleStatus, {
+    actorId: authUser.id,
+    workspaceId: permission.workspaceId,
+    reason: "manual_status_update",
+  });
+  const alert = await getAlertById(c.env, id);
+  if (!alert) {
+    return c.json({ error: "Incident not found." }, 404);
+  }
+  return c.json({ incident: mapAlertToIncident(alert) });
+});
+
+app.post("/api/aws/incidents/:id/acknowledge", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Incident id is required." }, 400);
+  await updateIncidentLifecycleStatus(c.env, id, "Analyzing", {
+    actorId: authUser.id,
+    workspaceId: permission.workspaceId,
+    reason: "incident_acknowledged",
+  });
+  const alert = await getAlertById(c.env, id);
+  if (!alert) return c.json({ error: "Incident not found." }, 404);
+  return c.json({ incident: mapAlertToIncident(alert) });
+});
+
+app.post("/api/aws/incidents/:id/escalate", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Incident id is required." }, 400);
+  await updateIncidentLifecycleStatus(c.env, id, "Escalated", {
+    actorId: authUser.id,
+    workspaceId: permission.workspaceId,
+    reason: "incident_escalated",
+  });
+  const alert = await getAlertById(c.env, id);
+  if (!alert) return c.json({ error: "Incident not found." }, 404);
+  return c.json({ incident: mapAlertToIncident(alert) });
+});
+
+app.get("/api/aws/playbooks", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const rows = await c.env.DB.prepare(
+    `
+      SELECT
+        id,
+        name,
+        trigger_condition,
+        action_text,
+        cooldown_minutes,
+        verification_window_seconds,
+        escalation_target,
+        enabled,
+        last_run,
+        success_rate
+      FROM automation_rules
+      ORDER BY created_at DESC
+    `
+  ).all<{
+    id: string;
+    name: string;
+    trigger_condition: string;
+    action_text: string;
+    cooldown_minutes: number;
+    verification_window_seconds: number;
+    escalation_target: string;
+    enabled: number;
+    last_run: string;
+    success_rate: number;
+  }>();
+
+  return c.json({
+    playbooks: ((rows.results ?? []) as Array<{
+      id: string;
+      name: string;
+      trigger_condition: string;
+      action_text: string;
+      cooldown_minutes: number;
+      verification_window_seconds: number;
+      escalation_target: string;
+      enabled: number;
+      last_run: string;
+      success_rate: number;
+    }>).map((row) => ({
+      id: row.id,
+      name: row.name,
+      triggerCondition: row.trigger_condition,
+      actions: parsePlaybookActions(row.action_text),
+      cooldownSeconds: row.cooldown_minutes * 60,
+      verificationWindowSeconds: row.verification_window_seconds,
+      escalationTarget: row.escalation_target,
+      enabled: Boolean(row.enabled),
+      lastRun: row.last_run,
+      successRate: row.success_rate,
+    })),
+  });
+});
+
+app.post("/api/aws/playbooks", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+
+  const body = await readBody(c);
+  const name = stringField(body, "name").trim();
+  const triggerCondition = stringField(body, "triggerCondition").trim();
+  const actionsRaw = Array.isArray(body?.actions) ? (body.actions as unknown[]) : [];
+  const actions = actionsRaw
+    .filter((item: unknown): item is string => typeof item === "string")
+    .map((item: string) => item.trim())
+    .filter((item: string) => ["restart", "scale", "redeploy", "failover"].includes(item));
+  const cooldownSeconds = numberField(body, "cooldownSeconds", 300);
+  const verificationWindowSeconds = numberField(body, "verificationWindowSeconds", 90);
+  const escalationTarget = stringField(body, "escalationTarget").trim() || "On-call SRE";
+
+  if (!name || !triggerCondition || actions.length === 0) {
+    return c.json({ error: "Playbook requires name, trigger, and at least one action." }, 400);
+  }
+
+  const id = `pb-${Date.now()}`;
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `
+      INSERT INTO automation_rules (
+        id, name, trigger_condition, action_text, cooldown_minutes, verification_window_seconds,
+        escalation_target, enabled, last_run, success_rate, created_at
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    `
+  )
+    .bind(
+      id,
+      name,
+      triggerCondition,
+      actions.join(","),
+      Math.max(1, Math.round(cooldownSeconds / 60)),
+      Math.max(30, verificationWindowSeconds),
+      escalationTarget,
+      1,
+      "Never",
+      92,
+      now
+    )
+    .run();
+
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "playbook.created",
+    entityType: "playbook",
+    entityId: id,
+    metadata: {
+      name,
+      triggerCondition,
+      actions,
+      cooldownSeconds: Math.max(60, Math.round(cooldownSeconds)),
+      verificationWindowSeconds: Math.max(30, verificationWindowSeconds),
+      escalationTarget,
+    },
+  });
+
+  return c.json(
+    {
+      playbook: {
+        id,
+        name,
+        triggerCondition,
+        actions,
+        cooldownSeconds: Math.max(60, Math.round(cooldownSeconds)),
+        verificationWindowSeconds: Math.max(30, verificationWindowSeconds),
+        escalationTarget,
+        enabled: true,
+        lastRun: "Never",
+        successRate: 92,
+      },
+    },
+    201
+  );
+});
+
+app.put("/api/aws/playbooks/:id/enabled", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (permission instanceof Response) return permission;
+  const id = c.req.param("id");
+  const body = await readBody(c);
+  const enabled = booleanField(body, "enabled", true);
+  if (!id) return c.json({ error: "Playbook id is required." }, 400);
+  await c.env.DB.prepare("UPDATE automation_rules SET enabled = ?1 WHERE id = ?2")
+    .bind(enabled ? 1 : 0, id)
+    .run();
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "playbook.toggled",
+    entityType: "playbook",
+    entityId: id,
+    metadata: { enabled },
+  });
+  return c.json({ success: true });
+});
+
+app.post("/api/aws/playbooks/:id/run", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Playbook id is required." }, 400);
+  await c.env.DB.prepare(
+    `
+      UPDATE automation_rules
+      SET last_run = ?1, success_rate = MIN(99, MAX(70, success_rate + ?2))
+      WHERE id = ?3
+    `
+  )
+    .bind("Just now", randomInt(-2, 3), id)
+    .run();
+  const startedAt = new Date().toISOString();
+  await c.env.DB.prepare(
+    `
+      INSERT INTO playbook_executions (
+        id, playbook_id, incident_id, status, verification_result, retry_count,
+        started_at, finished_at, details
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+    `
+  )
+    .bind(
+      `pe-${Date.now()}-${randomInt(1000, 9999)}`,
+      id,
+      null,
+      "success",
+      "passed",
+      0,
+      startedAt,
+      startedAt,
+      JSON.stringify({ runType: "manual" })
+    )
+    .run();
+
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "playbook.run",
+    entityType: "playbook",
+    entityId: id,
+    metadata: { runType: "manual" },
+  });
+  return c.json({ success: true });
+});
+
+app.delete("/api/aws/playbooks/:id", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (permission instanceof Response) return permission;
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Playbook id is required." }, 400);
+  await c.env.DB.prepare("DELETE FROM automation_rules WHERE id = ?1").bind(id).run();
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "playbook.deleted",
+    entityType: "playbook",
+    entityId: id,
+    metadata: {},
+  });
+  return c.json({ success: true });
+});
+
+app.get("/api/aws/audits", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const alerts = await c.env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, lifecycle_status, created_at
+      FROM alerts
+      ORDER BY created_at DESC
+    `
+  ).all<AlertRow>();
+  const notes = await c.env.DB.prepare(
+    `SELECT incident_id, note, updated_at FROM incident_audit_notes`
+  ).all<AuditNoteRow>();
+  const noteEntries = ((notes.results ?? []) as AuditNoteRow[]).map(
+    (item: AuditNoteRow): [string, AuditNoteRow] => [item.incident_id, item]
+  );
+  const noteByIncidentId = new Map<string, AuditNoteRow>(noteEntries);
+
+  const audits = ((alerts.results ?? []) as AlertRow[]).map((alert: AlertRow) => {
+    const note = noteByIncidentId.get(alert.id);
+    return mapAlertToAuditRecord(alert, note);
+  });
+
+  return c.json({ audits });
+});
+
+app.put("/api/aws/audits/:id/note", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer"]);
+  if (permission instanceof Response) return permission;
+
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Audit id is required." }, 400);
+  const incidentId = extractIncidentIdFromAuditId(id);
+  if (!incidentId) return c.json({ error: "Invalid audit id." }, 400);
+
+  const body = await readBody(c);
+  const note = stringField(body, "note").trim();
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(
+    `
+      INSERT INTO incident_audit_notes (incident_id, note, updated_at)
+      VALUES (?1, ?2, ?3)
+      ON CONFLICT(incident_id) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
+    `
+  )
+    .bind(incidentId, note, now)
+    .run();
+
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "incident.note.updated",
+    entityType: "incident",
+    entityId: incidentId,
+    metadata: { noteLength: note.length },
+  });
+
+  const alert = await getAlertById(c.env, incidentId);
+  if (!alert) return c.json({ error: "Incident not found for this audit." }, 404);
+  return c.json({
+    audit: mapAlertToAuditRecord(alert, {
+      incident_id: incidentId,
+      note,
+      updated_at: now,
+    }),
+  });
+});
+
+app.get("/api/aws/audits/:id/export", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Audit id is required." }, 400);
+  const incidentId = extractIncidentIdFromAuditId(id);
+  if (!incidentId) return c.json({ error: "Invalid audit id." }, 400);
+
+  const alert = await getAlertById(c.env, incidentId);
+  if (!alert) return c.json({ error: "Incident not found for this audit." }, 404);
+
+  const note = await c.env.DB.prepare(
+    `SELECT incident_id, note, updated_at FROM incident_audit_notes WHERE incident_id = ?1 LIMIT 1`
+  )
+    .bind(incidentId)
+    .first<AuditNoteRow>();
+
+  const report = buildIncidentExportReport(alert, note?.note ?? "");
+  return new Response(report, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${incidentId}-audit-report.txt"`,
+    },
+  });
+});
+
+app.post("/api/notifications/test", async (c) => {
+  await ensureSchema(c.env);
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin"]);
+  if (permission instanceof Response) return permission;
+
+  const body = await readBody(c);
+  const typeRaw = stringField(body, "type").trim().toLowerCase();
+  const target = stringField(body, "target").trim();
+  const type =
+    typeRaw === "email" || typeRaw === "sms" || typeRaw === "slack" || typeRaw === "teams"
+      ? typeRaw
+      : null;
+  if (!type || !target) {
+    return c.json({ error: "Notification type and target are required." }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const deliveryId = `nd-${Date.now()}-${randomInt(1000, 9999)}`;
+  await c.env.DB.prepare(
+    `
+      INSERT INTO notification_deliveries (
+        id, workspace_id, incident_id, channel_type, target, status,
+        provider_message_id, attempt_count, error_message, created_at, updated_at
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    `
+  )
+    .bind(
+      deliveryId,
+      permission.workspaceId,
+      null,
+      type,
+      target,
+      "sent",
+      `provider-${makeReadableToken(8)}`,
+      1,
+      null,
+      now,
+      now
+    )
+    .run();
+
+  await appendAuditLog(c.env, {
+    workspaceId: permission.workspaceId,
+    userId: authUser.id,
+    action: "notification.test.sent",
+    entityType: "notification_delivery",
+    entityId: deliveryId,
+    metadata: { type, target },
+  });
+
+  return c.json({
+    success: true,
+    delivery: {
+      id: deliveryId,
+      type,
+      target,
+      status: "sent",
+      createdAt: now,
+    },
+  });
+});
+
+app.get("/api/notifications/deliveries", async (c) => {
+  await ensureSchema(c.env);
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  const permission = await requireWorkspaceRole(c.env, authUser.id, ["owner", "admin", "engineer", "viewer"]);
+  if (permission instanceof Response) return permission;
+
+  const statusFilter = c.req.query("status")?.trim().toLowerCase() ?? "";
+  const page = parsePositiveInt(c.req.query("page"), 1);
+  const limit = parseBoundedInt(c.req.query("limit"), 20, 1, 200);
+
+  const rows = await c.env.DB.prepare(
+    `
+      SELECT
+        id,
+        channel_type,
+        target,
+        status,
+        provider_message_id,
+        attempt_count,
+        error_message,
+        created_at
+      FROM notification_deliveries
+      WHERE workspace_id = ?1
+      ORDER BY created_at DESC
+    `
+  )
+    .bind(permission.workspaceId)
+    .all<NotificationDeliveryRow>();
+
+  const allItems = (rows.results ?? []) as NotificationDeliveryRow[];
+  const filtered = allItems.filter((item: NotificationDeliveryRow) => {
+    if (!statusFilter) return true;
+    return item.status.toLowerCase() === statusFilter;
+  });
+  const { items, meta } = paginateList(filtered, page, limit);
+
+  return c.json({
+    deliveries: items.map((item: NotificationDeliveryRow) => ({
+      id: item.id,
+      type: item.channel_type,
+      target: item.target,
+      status: item.status,
+      providerMessageId: item.provider_message_id,
+      attemptCount: item.attempt_count,
+      errorMessage: item.error_message,
+      createdAt: item.created_at,
+    })),
+    meta: {
+      ...meta,
+      filters: { status: statusFilter || null },
+    },
+  });
+});
+
+app.get("/api/aws/metrics", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+
+  const range = (c.req.query("range") ?? "1h") as "15m" | "1h" | "24h";
+  const compareRange = (c.req.query("compareRange") ?? "none") as
+    | "none"
+    | "previous_period"
+    | "previous_day";
+  const filters = {
+    region: c.req.query("region") ?? "All",
+    service: c.req.query("service") ?? "All",
+    resourceId: c.req.query("resourceId") ?? "All",
+  };
+
+  const primary = generateMetricsBundle(range);
+  const compare = compareRange === "none" ? null : generateMetricsBundle(range);
+  return c.json({ primary, compare, filters, range, compareRange });
+});
+
 app.get("/api/servers", async (c) => {
   const authUser = await requireAuthenticatedUser(c);
   if (authUser instanceof Response) return authUser;
@@ -309,19 +1454,62 @@ app.get("/api/servers", async (c) => {
     `
   ).all<ServerRow>();
 
+  const allServers = (servers.results ?? []).map((server: ServerRow) => ({
+    id: server.id,
+    name: server.name,
+    ip: server.ip,
+    region: server.region,
+    uptime: server.uptime,
+    cpu: server.cpu,
+    memory: server.memory,
+    status: server.status,
+    lastHeartbeat: server.last_heartbeat,
+    createdAt: server.created_at,
+  }));
+
+  const search = c.req.query("search")?.trim().toLowerCase() ?? "";
+  const statusFilter = c.req.query("status")?.trim();
+  const regionFilter = c.req.query("region")?.trim();
+  const sortBy = normalizeServerSortField(c.req.query("sortBy"));
+  const sortDir = normalizeSortDirection(c.req.query("sortDir"));
+  const page = parsePositiveInt(c.req.query("page"), 1);
+  const limit = parseBoundedInt(c.req.query("limit"), 20, 1, 200);
+
+  const filtered = allServers.filter((server: ServerResponseItem) => {
+    const matchesSearch =
+      !search ||
+      server.id.toLowerCase().includes(search) ||
+      server.name.toLowerCase().includes(search) ||
+      server.ip.toLowerCase().includes(search) ||
+      server.region.toLowerCase().includes(search);
+    const matchesStatus = !statusFilter || server.status === statusFilter;
+    const matchesRegion = !regionFilter || server.region === regionFilter;
+    return matchesSearch && matchesStatus && matchesRegion;
+  });
+
+  const sorted = filtered.sort((left: ServerResponseItem, right: ServerResponseItem) =>
+    compareValues(
+      getServerSortValue(left, sortBy),
+      getServerSortValue(right, sortBy),
+      sortDir
+    )
+  );
+
+  const { items, meta } = paginateList(sorted, page, limit);
+
   return c.json({
-    servers: (servers.results ?? []).map((server: ServerRow) => ({
-      id: server.id,
-      name: server.name,
-      ip: server.ip,
-      region: server.region,
-      uptime: server.uptime,
-      cpu: server.cpu,
-      memory: server.memory,
-      status: server.status,
-      lastHeartbeat: server.last_heartbeat,
-      createdAt: server.created_at,
-    })),
+    servers: items,
+    items,
+    meta: {
+      ...meta,
+      sortBy,
+      sortDir,
+      filters: {
+        search,
+        status: statusFilter ?? null,
+        region: regionFilter ?? null,
+      },
+    },
   });
 });
 
@@ -406,15 +1594,57 @@ app.get("/api/alerts", async (c) => {
     `
   ).all<AlertRow>();
 
+  const allAlerts = (alerts.results ?? []).map((alert: AlertRow) => ({
+    id: alert.id,
+    title: alert.title,
+    source: alert.source,
+    severity: alert.severity,
+    status: alert.status,
+    createdAt: alert.created_at,
+  }));
+
+  const search = c.req.query("search")?.trim().toLowerCase() ?? "";
+  const severityFilter = c.req.query("severity")?.trim();
+  const statusFilter = c.req.query("status")?.trim();
+  const sortBy = normalizeAlertSortField(c.req.query("sortBy"));
+  const sortDir = normalizeSortDirection(c.req.query("sortDir"));
+  const page = parsePositiveInt(c.req.query("page"), 1);
+  const limit = parseBoundedInt(c.req.query("limit"), 20, 1, 200);
+
+  const filtered = allAlerts.filter((alert: AlertResponseItem) => {
+    const matchesSearch =
+      !search ||
+      alert.id.toLowerCase().includes(search) ||
+      alert.title.toLowerCase().includes(search) ||
+      alert.source.toLowerCase().includes(search);
+    const matchesSeverity = !severityFilter || alert.severity === severityFilter;
+    const matchesStatus = !statusFilter || alert.status === statusFilter;
+    return matchesSearch && matchesSeverity && matchesStatus;
+  });
+
+  const sorted = filtered.sort((left: AlertResponseItem, right: AlertResponseItem) =>
+    compareValues(
+      getAlertSortValue(left, sortBy),
+      getAlertSortValue(right, sortBy),
+      sortDir
+    )
+  );
+
+  const { items, meta } = paginateList(sorted, page, limit);
+
   return c.json({
-    alerts: (alerts.results ?? []).map((alert: AlertRow) => ({
-      id: alert.id,
-      title: alert.title,
-      source: alert.source,
-      severity: alert.severity,
-      status: alert.status,
-      createdAt: alert.created_at,
-    })),
+    alerts: items,
+    items,
+    meta: {
+      ...meta,
+      sortBy,
+      sortDir,
+      filters: {
+        search,
+        severity: severityFilter ?? null,
+        status: statusFilter ?? null,
+      },
+    },
   });
 });
 
@@ -479,7 +1709,18 @@ app.put("/api/alerts/:id", async (c) => {
     return c.json({ error: "Status must be Active or Resolved." }, 400);
   }
 
-  await c.env.DB.prepare("UPDATE alerts SET status = ?1 WHERE id = ?2")
+  await c.env.DB.prepare(
+    `
+      UPDATE alerts
+      SET
+        status = ?1,
+        lifecycle_status = CASE
+          WHEN ?1 = 'Resolved' THEN 'Resolved'
+          ELSE lifecycle_status
+        END
+      WHERE id = ?2
+    `
+  )
     .bind(status, id)
     .run();
 
@@ -520,18 +1761,62 @@ app.get("/api/automation/rules", async (c) => {
     `
   ).all<AutomationRuleRow>();
 
+  const allRules = (rules.results ?? []).map((rule: AutomationRuleRow) => ({
+    id: rule.id,
+    name: rule.name,
+    trigger: rule.trigger_condition,
+    action: rule.action,
+    cooldownMinutes: rule.cooldown_minutes,
+    enabled: Boolean(rule.enabled),
+    lastRun: rule.last_run,
+    successRate: rule.success_rate,
+    createdAt: rule.created_at,
+  }));
+
+  const search = c.req.query("search")?.trim().toLowerCase() ?? "";
+  const enabledFilter = c.req.query("enabled");
+  const normalizedEnabledFilter =
+    enabledFilter === "true" || enabledFilter === "false" ? enabledFilter : null;
+  const sortBy = normalizeRuleSortField(c.req.query("sortBy"));
+  const sortDir = normalizeSortDirection(c.req.query("sortDir"));
+  const page = parsePositiveInt(c.req.query("page"), 1);
+  const limit = parseBoundedInt(c.req.query("limit"), 20, 1, 200);
+
+  const filtered = allRules.filter((rule: RuleResponseItem) => {
+    const matchesSearch =
+      !search ||
+      rule.id.toLowerCase().includes(search) ||
+      rule.name.toLowerCase().includes(search) ||
+      rule.trigger.toLowerCase().includes(search) ||
+      rule.action.toLowerCase().includes(search);
+    const matchesEnabled =
+      !normalizedEnabledFilter ||
+      rule.enabled === (normalizedEnabledFilter === "true");
+    return matchesSearch && matchesEnabled;
+  });
+
+  const sorted = filtered.sort((left: RuleResponseItem, right: RuleResponseItem) =>
+    compareValues(
+      getRuleSortValue(left, sortBy),
+      getRuleSortValue(right, sortBy),
+      sortDir
+    )
+  );
+
+  const { items, meta } = paginateList(sorted, page, limit);
+
   return c.json({
-    rules: (rules.results ?? []).map((rule: AutomationRuleRow) => ({
-      id: rule.id,
-      name: rule.name,
-      trigger: rule.trigger_condition,
-      action: rule.action,
-      cooldownMinutes: rule.cooldown_minutes,
-      enabled: Boolean(rule.enabled),
-      lastRun: rule.last_run,
-      successRate: rule.success_rate,
-      createdAt: rule.created_at,
-    })),
+    rules: items,
+    items,
+    meta: {
+      ...meta,
+      sortBy,
+      sortDir,
+      filters: {
+        search,
+        enabled: normalizedEnabledFilter,
+      },
+    },
   });
 });
 
@@ -629,6 +1914,211 @@ app.delete("/api/automation/rules/:id", async (c) => {
   return c.json({ success: true });
 });
 
+app.get("/api/incidents", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const alerts = await c.env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, created_at
+      FROM alerts
+      ORDER BY created_at DESC
+    `
+  ).all<AlertRow>();
+
+  const incidents = (alerts.results ?? []).map((alert: AlertRow) => ({
+    id: alert.id,
+    title: alert.title,
+    source: alert.source,
+    severity: alert.severity,
+    status: alert.status === "Resolved" ? "Resolved" : "Detected",
+    owner: "Platform SRE",
+    team: "Reliability",
+    detectedAt: alert.created_at,
+  }));
+
+  const search = c.req.query("search")?.trim().toLowerCase() ?? "";
+  const severityFilter = c.req.query("severity")?.trim();
+  const statusFilter = c.req.query("status")?.trim();
+  const sortBy =
+    c.req.query("sortBy") === "title" || c.req.query("sortBy") === "severity"
+      ? c.req.query("sortBy")
+      : "detectedAt";
+  const sortDir = normalizeSortDirection(c.req.query("sortDir"));
+  const page = parsePositiveInt(c.req.query("page"), 1);
+  const limit = parseBoundedInt(c.req.query("limit"), 20, 1, 200);
+
+  const filtered = incidents.filter((incident: {
+    id: string;
+    title: string;
+    source: string;
+    severity: string;
+    status: string;
+    owner: string;
+    team: string;
+    detectedAt: string;
+  }) => {
+    const matchesSearch =
+      !search ||
+      incident.id.toLowerCase().includes(search) ||
+      incident.title.toLowerCase().includes(search) ||
+      incident.source.toLowerCase().includes(search);
+    const matchesSeverity = !severityFilter || incident.severity === severityFilter;
+    const matchesStatus = !statusFilter || incident.status === statusFilter;
+    return matchesSearch && matchesSeverity && matchesStatus;
+  });
+
+  const sorted = filtered.sort(
+    (
+      left: {
+        id: string;
+        title: string;
+        source: string;
+        severity: string;
+        status: string;
+        owner: string;
+        team: string;
+        detectedAt: string;
+      },
+      right: {
+        id: string;
+        title: string;
+        source: string;
+        severity: string;
+        status: string;
+        owner: string;
+        team: string;
+        detectedAt: string;
+      }
+    ) =>
+      compareValues(
+        left[sortBy as "title" | "severity" | "detectedAt"],
+        right[sortBy as "title" | "severity" | "detectedAt"],
+        sortDir
+      )
+  );
+  const { items, meta } = paginateList(sorted, page, limit);
+
+  return c.json({
+    incidents: items,
+    items,
+    meta: {
+      ...meta,
+      sortBy,
+      sortDir,
+      filters: {
+        search,
+        severity: severityFilter ?? null,
+        status: statusFilter ?? null,
+      },
+    },
+  });
+});
+
+app.get("/api/incidents/:id", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const id = c.req.param("id");
+  const alert = await c.env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, created_at
+      FROM alerts
+      WHERE id = ?1
+      LIMIT 1
+    `
+  )
+    .bind(id)
+    .first<AlertRow>();
+
+  if (!alert) {
+    return c.json({ error: "Incident not found." }, 404);
+  }
+
+  return c.json({
+    incident: {
+      id: alert.id,
+      title: alert.title,
+      source: alert.source,
+      severity: alert.severity,
+      status: alert.status === "Resolved" ? "Resolved" : "Detected",
+      owner: "Platform SRE",
+      team: "Reliability",
+      detectedAt: alert.created_at,
+      timeline: buildIncidentTimeline(alert),
+    },
+  });
+});
+
+app.get("/api/incidents/:id/export", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const id = c.req.param("id");
+  const alert = await c.env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, created_at
+      FROM alerts
+      WHERE id = ?1
+      LIMIT 1
+    `
+  )
+    .bind(id)
+    .first<AlertRow>();
+
+  if (!alert) {
+    return c.json({ error: "Incident not found." }, 404);
+  }
+
+  const report = [
+    `Incident: ${alert.id}`,
+    `Title: ${alert.title}`,
+    `Source: ${alert.source}`,
+    `Severity: ${alert.severity}`,
+    `Status: ${alert.status}`,
+    `Detected At: ${alert.created_at}`,
+    "Owner: Platform SRE",
+    "Team: Reliability",
+  ].join("\n");
+
+  return new Response(report, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${alert.id}-incident-report.txt"`,
+    },
+  });
+});
+
+app.get("/api/incidents/audit", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const alerts = await c.env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, created_at
+      FROM alerts
+      ORDER BY created_at DESC
+    `
+  ).all<AlertRow>();
+
+  const audits = (alerts.results ?? []).map((alert: AlertRow) => ({
+    id: `AUD-${alert.id}`,
+    incidentId: alert.id,
+    summary: `${alert.title} (${alert.source})`,
+    verificationResult: computeAuditResult(alert.id),
+    executedActions: ["restart", "scale"],
+    humanNotes:
+      "Auto-recovery run completed. Follow-up monitoring window set for 20 minutes.",
+    updatedAt: alert.created_at,
+  }));
+
+  return c.json({ audits });
+});
+
 app.get("/api/ai/anomalies", async (c) => {
   const authUser = await requireAuthenticatedUser(c);
   if (authUser instanceof Response) return authUser;
@@ -718,6 +2208,32 @@ app.get("/api/metrics/:metric", async (c) => {
   if (authUser instanceof Response) return authUser;
 
   const metric = c.req.param("metric");
+  if (metric === "query") {
+    const range = (c.req.query("range") ?? "24h") as "15m" | "1h" | "24h";
+    const compareRange = (c.req.query("compareRange") ?? "none") as
+      | "none"
+      | "previous_period"
+      | "previous_day";
+    const region = c.req.query("region") ?? "All";
+    const service = c.req.query("service") ?? "All";
+    const resourceId = c.req.query("resourceId") ?? "All";
+
+    const primary = generateMetricsBundle(range);
+    const compare = compareRange === "none" ? null : generateMetricsBundle(range);
+
+    return c.json({
+      filters: {
+        region,
+        service,
+        resourceId,
+      },
+      range,
+      compareRange,
+      primary,
+      compare,
+    });
+  }
+
   const range = (c.req.query("range") ?? "24h") as "1h" | "24h" | "7d";
 
   if (!["cpu", "memory", "disk", "network"].includes(metric)) {
@@ -755,6 +2271,51 @@ app.get("/api/stream/metrics", async (c) => {
 
       push();
       interval = setInterval(push, 3000);
+    },
+    cancel() {
+      closed = true;
+      if (interval) clearInterval(interval);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+});
+
+app.get("/api/stream/alerts", async (c) => {
+  const authUser = await requireAuthenticatedUser(c);
+  if (authUser instanceof Response) return authUser;
+  await ensureSchema(c.env);
+
+  const encoder = new TextEncoder();
+  let interval: ReturnType<typeof setInterval> | null = null;
+  let closed = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const push = async () => {
+        if (closed) return;
+        const countRow = await c.env.DB.prepare(
+          "SELECT COUNT(*) as count FROM alerts WHERE status = 'Active'"
+        ).first<{ count: number }>();
+
+        const payload = JSON.stringify({
+          at: new Date().toISOString(),
+          activeAlerts: Number(countRow?.count ?? 0),
+          signal: Number(countRow?.count ?? 0) > 0 ? "attention" : "normal",
+        });
+        controller.enqueue(encoder.encode(`event: alerts\ndata: ${payload}\n\n`));
+      };
+
+      void push();
+      interval = setInterval(() => {
+        void push();
+      }, 5000);
     },
     cancel() {
       closed = true;
@@ -1083,6 +2644,7 @@ async function ensureSchema(env: Env): Promise<void> {
   ).run();
 
   await ensureUsersPlanColumn(env);
+  await ensureUsersEmailVerifiedColumn(env);
 
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
@@ -1101,9 +2663,11 @@ async function ensureSchema(env: Env): Promise<void> {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS alerts (id TEXT PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL, severity TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)"
   ).run();
+  await ensureAlertsLifecycleColumn(env);
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS automation_rules (id TEXT PRIMARY KEY, name TEXT NOT NULL, trigger_condition TEXT NOT NULL, action_text TEXT NOT NULL, cooldown_minutes INTEGER NOT NULL, enabled INTEGER NOT NULL, last_run TEXT NOT NULL, success_rate INTEGER NOT NULL, created_at TEXT NOT NULL)"
   ).run();
+  await ensureAutomationRuleExtraColumns(env);
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS user_settings (user_id TEXT PRIMARY KEY, company TEXT NOT NULL, role TEXT NOT NULL, timezone TEXT NOT NULL, theme TEXT NOT NULL, email_alerts INTEGER NOT NULL, slack_alerts INTEGER NOT NULL, weekly_report INTEGER NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
   ).run();
@@ -1112,6 +2676,35 @@ async function ensureSchema(env: Env): Promise<void> {
   ).run();
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS ai_recommendations (id TEXT PRIMARY KEY, title TEXT NOT NULL, impact TEXT NOT NULL, priority TEXT NOT NULL, done INTEGER NOT NULL)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS aws_connections (user_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, region TEXT NOT NULL, environment TEXT NOT NULL, connection_status TEXT NOT NULL, auto_recovery_enabled INTEGER NOT NULL, channel_email INTEGER NOT NULL, channel_sms INTEGER NOT NULL, channel_slack INTEGER NOT NULL, channel_teams INTEGER NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS memberships (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace_id, user_id), FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS auth_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, purpose TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, consumed_at TEXT, metadata TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS incident_events (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, state TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT, created_at TEXT NOT NULL, FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS playbook_executions (id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, incident_id TEXT, status TEXT NOT NULL, verification_result TEXT NOT NULL, retry_count INTEGER NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, details TEXT NOT NULL, FOREIGN KEY (playbook_id) REFERENCES automation_rules(id) ON DELETE CASCADE, FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE SET NULL)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS notification_deliveries (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, incident_id TEXT, channel_type TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, provider_message_id TEXT, attempt_count INTEGER NOT NULL, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE, FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE SET NULL)"
+  ).run();
+  await ensureNotificationDeliveriesColumns(env);
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, metadata TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL)"
+  ).run();
+  await ensureAuditLogsColumns(env);
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS incident_audit_notes (incident_id TEXT PRIMARY KEY, note TEXT NOT NULL, updated_at TEXT NOT NULL)"
   ).run();
 
   await env.DB.prepare(
@@ -1125,6 +2718,33 @@ async function ensureSchema(env: Env): Promise<void> {
   ).run();
   await env.DB.prepare(
     "CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_aws_connections_user_id ON aws_connections(user_id)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_memberships_user_id ON memberships(user_id)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_memberships_workspace_id ON memberships(workspace_id)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_id ON auth_tokens(user_id)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_auth_tokens_purpose_hash ON auth_tokens(purpose, token_hash)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_incident_events_incident_id ON incident_events(incident_id, created_at)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_playbook_executions_playbook_id ON playbook_executions(playbook_id, started_at)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_notification_deliveries_workspace_id ON notification_deliveries(workspace_id, created_at)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_id ON audit_logs(workspace_id, created_at)"
   ).run();
 
   await seedMonitoringData(env);
@@ -1190,13 +2810,118 @@ async function ensureUsersPlanColumn(env: Env): Promise<void> {
   const result = await env.DB.prepare("PRAGMA table_info(users)").all<{
     name: string;
   }>();
-  const columns = result.results ?? [];
-  const hasPlanColumn = columns.some((column) => column.name === "plan");
+  const columns = (result.results ?? []) as Array<{ name: string }>;
+  const hasPlanColumn = columns.some((column: { name: string }) => column.name === "plan");
   if (hasPlanColumn) return;
 
   await env.DB.prepare(
     "ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'pro'"
   ).run();
+}
+
+async function ensureUsersEmailVerifiedColumn(env: Env): Promise<void> {
+  const result = await env.DB.prepare("PRAGMA table_info(users)").all<{ name: string }>();
+  const columns = (result.results ?? []) as Array<{ name: string }>;
+  const hasColumn = columns.some((column: { name: string }) => column.name === "email_verified");
+  if (hasColumn) return;
+
+  await env.DB.prepare(
+    "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0"
+  ).run();
+}
+
+async function ensureAlertsLifecycleColumn(env: Env): Promise<void> {
+  const result = await env.DB.prepare("PRAGMA table_info(alerts)").all<{ name: string }>();
+  const columns = (result.results ?? []) as Array<{ name: string }>;
+  const hasLifecycle = columns.some((column: { name: string }) => column.name === "lifecycle_status");
+  if (hasLifecycle) return;
+  await env.DB.prepare(
+    "ALTER TABLE alerts ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'Detected'"
+  ).run();
+}
+
+async function ensureAutomationRuleExtraColumns(env: Env): Promise<void> {
+  const result = await env.DB.prepare("PRAGMA table_info(automation_rules)").all<{ name: string }>();
+  const columns = (result.results ?? []) as Array<{ name: string }>;
+  const hasVerification = columns.some(
+    (column: { name: string }) => column.name === "verification_window_seconds"
+  );
+  if (!hasVerification) {
+    await env.DB.prepare(
+      "ALTER TABLE automation_rules ADD COLUMN verification_window_seconds INTEGER NOT NULL DEFAULT 90"
+    ).run();
+  }
+  const hasEscalation = columns.some(
+    (column: { name: string }) => column.name === "escalation_target"
+  );
+  if (!hasEscalation) {
+    await env.DB.prepare(
+      "ALTER TABLE automation_rules ADD COLUMN escalation_target TEXT NOT NULL DEFAULT 'On-call SRE'"
+    ).run();
+  }
+}
+
+async function ensureNotificationDeliveriesColumns(env: Env): Promise<void> {
+  const result = await env.DB.prepare("PRAGMA table_info(notification_deliveries)").all<{
+    name: string;
+  }>();
+  const columns = (result.results ?? []) as Array<{ name: string }>;
+
+  const hasWorkspaceId = columns.some((column: { name: string }) => column.name === "workspace_id");
+  if (!hasWorkspaceId) {
+    await env.DB.prepare(
+      "ALTER TABLE notification_deliveries ADD COLUMN workspace_id TEXT"
+    ).run();
+  }
+
+  const hasChannelType = columns.some((column: { name: string }) => column.name === "channel_type");
+  if (!hasChannelType) {
+    await env.DB.prepare(
+      "ALTER TABLE notification_deliveries ADD COLUMN channel_type TEXT NOT NULL DEFAULT 'email'"
+    ).run();
+  }
+
+  const hasTarget = columns.some((column: { name: string }) => column.name === "target");
+  if (!hasTarget) {
+    await env.DB.prepare(
+      "ALTER TABLE notification_deliveries ADD COLUMN target TEXT NOT NULL DEFAULT ''"
+    ).run();
+  }
+
+  const hasUpdatedAt = columns.some((column: { name: string }) => column.name === "updated_at");
+  if (!hasUpdatedAt) {
+    await env.DB.prepare(
+      "ALTER TABLE notification_deliveries ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+    ).run();
+  }
+
+  await env.DB.prepare(
+    "UPDATE notification_deliveries SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at)"
+  ).run();
+}
+
+async function ensureAuditLogsColumns(env: Env): Promise<void> {
+  const result = await env.DB.prepare("PRAGMA table_info(audit_logs)").all<{
+    name: string;
+  }>();
+  const columns = (result.results ?? []) as Array<{ name: string }>;
+
+  const hasWorkspaceId = columns.some((column: { name: string }) => column.name === "workspace_id");
+  if (!hasWorkspaceId) {
+    await env.DB.prepare("ALTER TABLE audit_logs ADD COLUMN workspace_id TEXT").run();
+  }
+
+  const hasUserId = columns.some((column: { name: string }) => column.name === "user_id");
+  if (!hasUserId) {
+    await env.DB.prepare("ALTER TABLE audit_logs ADD COLUMN user_id TEXT").run();
+  }
+
+  const hasMetadata = columns.some((column: { name: string }) => column.name === "metadata");
+  if (!hasMetadata) {
+    await env.DB.prepare(
+      "ALTER TABLE audit_logs ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+    ).run();
+  }
 }
 
 async function createSession(c: HonoContext, userId: string): Promise<void> {
@@ -1497,6 +3222,259 @@ async function requireAuthenticatedUser(c: HonoContext): Promise<AuthUser | Resp
   return user;
 }
 
+function normalizeWorkspaceRole(value: string): WorkspaceRole | null {
+  const lowered = value.trim().toLowerCase();
+  if (
+    lowered === "owner" ||
+    lowered === "admin" ||
+    lowered === "engineer" ||
+    lowered === "viewer"
+  ) {
+    return lowered;
+  }
+  return null;
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+async function getPrimaryMembership(
+  env: Env,
+  userId: string
+): Promise<{ workspaceId: string; role: WorkspaceRole } | null> {
+  const membership = await env.DB.prepare(
+    `
+      SELECT workspace_id, role
+      FROM memberships
+      WHERE user_id = ?1
+        AND status = 'active'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `
+  )
+    .bind(userId)
+    .first<{ workspace_id: string; role: string }>();
+
+  if (!membership) return null;
+  const role = normalizeWorkspaceRole(membership.role);
+  if (!role) return null;
+  return {
+    workspaceId: membership.workspace_id,
+    role,
+  };
+}
+
+async function upsertMembership(
+  env: Env,
+  workspaceId: string,
+  userId: string,
+  role: WorkspaceRole,
+  status: "invited" | "active" | "disabled"
+): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `
+      INSERT INTO memberships (id, workspace_id, user_id, role, status, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ON CONFLICT(workspace_id, user_id)
+      DO UPDATE SET role = excluded.role, status = excluded.status, updated_at = excluded.updated_at
+    `
+  )
+    .bind(
+      `mbr-${workspaceId}-${userId}`,
+      workspaceId,
+      userId,
+      role,
+      status,
+      now,
+      now
+    )
+    .run();
+}
+
+async function ensureDefaultWorkspaceForUser(
+  env: Env,
+  userId: string,
+  displayName?: string
+): Promise<{ workspaceId: string; role: WorkspaceRole }> {
+  const existing = await getPrimaryMembership(env, userId);
+  if (existing) return existing;
+
+  const now = new Date().toISOString();
+  const workspaceId = `ws-${userId}`;
+  const normalizedName = displayName?.trim() ? `${displayName.trim()} Workspace` : "My Workspace";
+  const slug = `ws-${userId.slice(0, 8)}`;
+
+  await env.DB.prepare(
+    `
+      INSERT OR IGNORE INTO workspaces (id, name, slug, created_by, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    `
+  )
+    .bind(workspaceId, normalizedName, slug, userId, now, now)
+    .run();
+
+  await upsertMembership(env, workspaceId, userId, "owner", "active");
+  return {
+    workspaceId,
+    role: "owner",
+  };
+}
+
+async function requireWorkspaceRole(
+  env: Env,
+  userId: string,
+  allowedRoles: WorkspaceRole[]
+): Promise<{ workspaceId: string; role: WorkspaceRole } | Response> {
+  const membership = await ensureDefaultWorkspaceForUser(env, userId);
+  if (allowedRoles.includes(membership.role)) {
+    return membership;
+  }
+
+  return new Response(JSON.stringify({ error: "Insufficient workspace permissions." }), {
+    status: 403,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+async function hashOpaqueToken(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return bytesToBase64Url(new Uint8Array(digest));
+}
+
+async function createAuthToken(
+  env: Env,
+  userId: string,
+  purpose: AuthTokenPurpose,
+  ttlSeconds: number,
+  metadata: Record<string, unknown>
+): Promise<{ token: string; expiresAt: string }> {
+  const token = `${purpose}_${generateRandomToken(24)}`;
+  const tokenHash = await hashOpaqueToken(token);
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+
+  await env.DB.prepare(
+    `
+      INSERT INTO auth_tokens (id, user_id, purpose, token_hash, expires_at, consumed_at, metadata, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `
+  )
+    .bind(
+      `tok-${Date.now()}-${randomInt(1000, 9999)}`,
+      userId,
+      purpose,
+      tokenHash,
+      expiresAt,
+      null,
+      JSON.stringify(metadata),
+      now
+    )
+    .run();
+
+  return { token, expiresAt };
+}
+
+async function consumeAuthToken(
+  env: Env,
+  token: string,
+  purpose: AuthTokenPurpose
+): Promise<AuthTokenRow | null> {
+  const tokenHash = await hashOpaqueToken(token);
+  const now = new Date().toISOString();
+
+  const row = await env.DB.prepare(
+    `
+      SELECT id, user_id, purpose, token_hash, expires_at, consumed_at, metadata, created_at
+      FROM auth_tokens
+      WHERE token_hash = ?1
+        AND purpose = ?2
+        AND consumed_at IS NULL
+        AND expires_at > ?3
+      LIMIT 1
+    `
+  )
+    .bind(tokenHash, purpose, now)
+    .first<AuthTokenRow>();
+
+  if (!row) return null;
+
+  await env.DB.prepare("UPDATE auth_tokens SET consumed_at = ?1 WHERE id = ?2")
+    .bind(now, row.id)
+    .run();
+
+  return row;
+}
+
+async function appendIncidentEvent(env: Env, input: {
+  incidentId: string;
+  eventType: string;
+  title: string;
+  detail: string;
+  state: AlertLifecycleStatus;
+  actorType: "system" | "user";
+  actorId: string | null;
+}): Promise<void> {
+  await env.DB.prepare(
+    `
+      INSERT INTO incident_events (
+        id, incident_id, event_type, title, detail, state, actor_type, actor_id, created_at
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+    `
+  )
+    .bind(
+      `iev-${Date.now()}-${randomInt(1000, 9999)}`,
+      input.incidentId,
+      input.eventType,
+      input.title,
+      input.detail,
+      input.state,
+      input.actorType,
+      input.actorId,
+      new Date().toISOString()
+    )
+    .run();
+}
+
+async function appendAuditLog(env: Env, input: {
+  workspaceId: string | null;
+  userId: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  metadata: Record<string, unknown>;
+}): Promise<void> {
+  await env.DB.prepare(
+    `
+      INSERT INTO audit_logs (id, workspace_id, user_id, action, entity_type, entity_id, metadata, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `
+  )
+    .bind(
+      `aud-${Date.now()}-${randomInt(1000, 9999)}`,
+      input.workspaceId,
+      input.userId,
+      input.action,
+      input.entityType,
+      input.entityId,
+      JSON.stringify(input.metadata),
+      new Date().toISOString()
+    )
+    .run();
+}
+
 async function ensureUserSettings(env: Env, userId: string): Promise<void> {
   const row = await env.DB.prepare("SELECT user_id FROM user_settings WHERE user_id = ?1 LIMIT 1")
     .bind(userId)
@@ -1696,12 +3674,16 @@ function generateMetricSeries(
 }
 
 function buildLatestMetricsSample() {
+  const at = new Date().toISOString();
   return {
-    timestamp: new Date().toISOString(),
+    at,
+    timestamp: at,
     cpu: randomInt(20, 95),
     memory: randomInt(28, 98),
     disk: randomInt(18, 90),
     network: randomInt(20, 190),
+    errorRate: Number((Math.random() * 8).toFixed(2)),
+    responseTime: randomInt(80, 1300),
   };
 }
 
@@ -1733,6 +3715,629 @@ function booleanField(
     if (normalized === "false" || normalized === "0") return false;
   }
   return fallback;
+}
+
+function generateMetricsBundle(range: "15m" | "1h" | "24h") {
+  const length = range === "15m" ? 20 : range === "1h" ? 24 : 36;
+  return {
+    cpu: generateSeriesWave(length, 44, 14, 12, 98),
+    memory: generateSeriesWave(length, 58, 11, 16, 98),
+    disk: generateSeriesWave(length, 52, 9, 12, 96),
+    network: generateSeriesWave(length, 820, 520, 80, 2400),
+    errorRate: generateSeriesWave(length, 1.8, 2.2, 0, 12),
+    responseTime: generateSeriesWave(length, 320, 240, 70, 1800),
+    anomalies: generateAnomalyFlags(length),
+  };
+}
+
+function generateSeriesWave(
+  length: number,
+  center: number,
+  variance: number,
+  min: number,
+  max: number
+): number[] {
+  const values: number[] = [];
+  let current = center;
+  for (let index = 0; index < length; index += 1) {
+    const drift = (Math.random() - 0.5) * variance;
+    current = clampNumber(current + drift, min, max);
+    values.push(Number(current.toFixed(2)));
+  }
+  return values;
+}
+
+function generateAnomalyFlags(length: number): number[] {
+  const flags = new Array(length).fill(0);
+  const count = Math.max(1, Math.floor(length / 12));
+  for (let index = 0; index < count; index += 1) {
+    flags[randomInt(0, length - 1)] = 1;
+  }
+  return flags;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
+  return parsed;
+}
+
+function parseBoundedInt(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const parsed = parsePositiveInt(value, fallback);
+  return clampNumber(parsed, min, max);
+}
+
+function normalizeSortDirection(value: string | undefined): "asc" | "desc" {
+  return value?.toLowerCase() === "asc" ? "asc" : "desc";
+}
+
+function normalizeServerSortField(value: string | undefined): keyof ServerResponseItem {
+  const allowed: Array<keyof ServerResponseItem> = [
+    "createdAt",
+    "name",
+    "region",
+    "status",
+    "cpu",
+    "memory",
+    "lastHeartbeat",
+  ];
+  return allowed.includes(value as keyof ServerResponseItem)
+    ? (value as keyof ServerResponseItem)
+    : "createdAt";
+}
+
+function normalizeAlertSortField(value: string | undefined): keyof AlertResponseItem {
+  const allowed: Array<keyof AlertResponseItem> = [
+    "createdAt",
+    "title",
+    "source",
+    "severity",
+    "status",
+  ];
+  return allowed.includes(value as keyof AlertResponseItem)
+    ? (value as keyof AlertResponseItem)
+    : "createdAt";
+}
+
+function normalizeRuleSortField(value: string | undefined): keyof RuleResponseItem {
+  const allowed: Array<keyof RuleResponseItem> = [
+    "createdAt",
+    "name",
+    "enabled",
+    "successRate",
+    "cooldownMinutes",
+    "lastRun",
+  ];
+  return allowed.includes(value as keyof RuleResponseItem)
+    ? (value as keyof RuleResponseItem)
+    : "createdAt";
+}
+
+function getServerSortValue(
+  server: ServerResponseItem,
+  sortBy: keyof ServerResponseItem
+): string | number | boolean {
+  return server[sortBy];
+}
+
+function getAlertSortValue(
+  alert: AlertResponseItem,
+  sortBy: keyof AlertResponseItem
+): string | number | boolean {
+  return alert[sortBy];
+}
+
+function getRuleSortValue(
+  rule: RuleResponseItem,
+  sortBy: keyof RuleResponseItem
+): string | number | boolean {
+  return rule[sortBy];
+}
+
+function compareValues(
+  left: string | number | boolean,
+  right: string | number | boolean,
+  direction: "asc" | "desc"
+): number {
+  const multiplier = direction === "asc" ? 1 : -1;
+  if (typeof left === "number" && typeof right === "number") {
+    return (left - right) * multiplier;
+  }
+  if (typeof left === "boolean" && typeof right === "boolean") {
+    return (Number(left) - Number(right)) * multiplier;
+  }
+  return String(left).localeCompare(String(right)) * multiplier;
+}
+
+function paginateList<T>(items: T[], page: number, limit: number) {
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = clampNumber(page, 1, totalPages);
+  const offset = (safePage - 1) * limit;
+  return {
+    items: items.slice(offset, offset + limit),
+    meta: {
+      page: safePage,
+      limit,
+      total,
+      totalPages,
+    },
+  };
+}
+
+function getOpenApiSpec() {
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: "InfraMind AI API",
+      version: API_VERSION,
+      description:
+        "Core API surface for auth, dashboard modules, metrics, settings, and automation.",
+    },
+    servers: [
+      {
+        url: "/api",
+      },
+      {
+        url: "/api/v1",
+      },
+    ],
+    paths: {
+      "/auth/register": { post: { summary: "Register user account" } },
+      "/auth/login": { post: { summary: "Login with email/password" } },
+      "/auth/me": { get: { summary: "Get current session user" } },
+      "/auth/request-password-reset": {
+        post: { summary: "Create password reset token" },
+      },
+      "/auth/reset-password": { post: { summary: "Reset account password" } },
+      "/auth/request-email-verification": {
+        post: { summary: "Create email verification token" },
+      },
+      "/auth/verify-email": { post: { summary: "Verify account email" } },
+      "/workspaces/me": { get: { summary: "Get active workspace membership" } },
+      "/workspaces/invitations": { post: { summary: "Create workspace invitation" } },
+      "/workspaces/invitations/{token}/accept": {
+        post: { summary: "Accept workspace invitation" },
+      },
+      "/servers": { get: { summary: "List servers with pagination/filter/sort" } },
+      "/alerts": { get: { summary: "List alerts with pagination/filter/sort" } },
+      "/automation/rules": {
+        get: { summary: "List automation rules with pagination/filter/sort" },
+      },
+      "/incidents": { get: { summary: "List incidents with pagination/filter/sort" } },
+      "/incidents/{id}/export": { get: { summary: "Export single incident report" } },
+      "/incidents/audit": { get: { summary: "List incident audit records" } },
+      "/metrics/{metric}": { get: { summary: "Get metric series by metric and range" } },
+      "/stream/metrics": { get: { summary: "SSE metrics stream" } },
+      "/stream/alerts": { get: { summary: "SSE alerts stream" } },
+      "/notifications/test": { post: { summary: "Send test notification" } },
+      "/notifications/deliveries": { get: { summary: "List notification deliveries" } },
+      "/user/profile": { get: { summary: "Get user settings profile" } },
+    },
+  };
+}
+
+function buildIncidentTimeline(alert: AlertRow) {
+  return [
+    {
+      id: `${alert.id}-ev-3`,
+      at: alert.created_at,
+      title: "Detected",
+      detail: "CloudWatch alarm threshold breached.",
+      state: "Detected",
+    },
+    {
+      id: `${alert.id}-ev-2`,
+      at: new Date(new Date(alert.created_at).getTime() + 2 * 60 * 1000).toISOString(),
+      title: "Analyzing",
+      detail: "Automated diagnosis checked service health and dependencies.",
+      state: "Analyzing",
+    },
+    {
+      id: `${alert.id}-ev-1`,
+      at: new Date(new Date(alert.created_at).getTime() + 5 * 60 * 1000).toISOString(),
+      title: alert.status === "Resolved" ? "Resolved" : "Recovering",
+      detail:
+        alert.status === "Resolved"
+          ? "Verification checks passed and incident was resolved."
+          : "Recovery playbook started and waiting for verification.",
+      state: alert.status === "Resolved" ? "Resolved" : "Recovering",
+    },
+  ];
+}
+
+function computeAuditResult(incidentId: string): "passed" | "failed" {
+  let sum = 0;
+  for (let index = 0; index < incidentId.length; index += 1) {
+    sum += incidentId.charCodeAt(index);
+  }
+  return sum % 5 === 0 ? "failed" : "passed";
+}
+
+function booleanFromUnknown(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") return true;
+    if (normalized === "false" || normalized === "0") return false;
+  }
+  return fallback;
+}
+
+async function ensureAwsConnection(env: Env, userId: string): Promise<void> {
+  const existing = await env.DB.prepare(
+    "SELECT user_id FROM aws_connections WHERE user_id = ?1 LIMIT 1"
+  )
+    .bind(userId)
+    .first<{ user_id: string }>();
+  if (existing) return;
+
+  await env.DB.prepare(
+    `
+      INSERT INTO aws_connections (
+        user_id, account_id, region, environment, connection_status, auto_recovery_enabled,
+        channel_email, channel_sms, channel_slack, channel_teams, updated_at
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    `
+  )
+    .bind(
+      userId,
+      "123456789012",
+      "us-east-1",
+      "prod",
+      "connected",
+      1,
+      1,
+      0,
+      1,
+      0,
+      new Date().toISOString()
+    )
+    .run();
+}
+
+async function getAwsConfigForUser(env: Env, userId: string) {
+  const row = await env.DB.prepare(
+    `
+      SELECT
+        user_id,
+        account_id,
+        region,
+        environment,
+        connection_status,
+        auto_recovery_enabled,
+        channel_email,
+        channel_sms,
+        channel_slack,
+        channel_teams,
+        updated_at
+      FROM aws_connections
+      WHERE user_id = ?1
+      LIMIT 1
+    `
+  )
+    .bind(userId)
+    .first<AwsConnectionRow>();
+
+  const config = row ?? {
+    user_id: userId,
+    account_id: "123456789012",
+    region: "us-east-1",
+    environment: "prod",
+    connection_status: "connected",
+    auto_recovery_enabled: 1,
+    channel_email: 1,
+    channel_sms: 0,
+    channel_slack: 1,
+    channel_teams: 0,
+    updated_at: new Date().toISOString(),
+  };
+
+  return {
+    accountId: config.account_id,
+    region: config.region,
+    environment: config.environment,
+    connectionStatus: config.connection_status,
+    autoRecoveryEnabled: Boolean(config.auto_recovery_enabled),
+    alertChannels: {
+      email: Boolean(config.channel_email),
+      sms: Boolean(config.channel_sms),
+      slack: Boolean(config.channel_slack),
+      teams: Boolean(config.channel_teams),
+    },
+    iamPermissions: [
+      {
+        name: "cloudwatch:GetMetricData",
+        status: "granted",
+        detail: "Required for metrics and alarm analysis.",
+      },
+      {
+        name: "ec2:RebootInstances",
+        status: "granted",
+        detail: "Required for restart recovery playbooks.",
+      },
+      {
+        name: "autoscaling:SetDesiredCapacity",
+        status: "unknown",
+        detail: "Used for emergency scale-out actions.",
+      },
+      {
+        name: "ecs:UpdateService",
+        status: "missing",
+        detail: "Needed for ECS redeploy and restart task recovery.",
+      },
+    ],
+  };
+}
+
+function resolveLifecycleStatus(alert: AlertRow): AlertLifecycleStatus {
+  if (alert.lifecycle_status && isValidIncidentStatus(alert.lifecycle_status)) {
+    return alert.lifecycle_status;
+  }
+  if (alert.status === "Resolved") return "Resolved";
+  return "Detected";
+}
+
+function isValidIncidentStatus(value: string): value is AlertLifecycleStatus {
+  return ["Detected", "Analyzing", "Recovering", "Resolved", "Escalated"].includes(value);
+}
+
+async function updateIncidentLifecycleStatus(
+  env: Env,
+  incidentId: string,
+  status: AlertLifecycleStatus,
+  options?: {
+    actorId?: string;
+    workspaceId?: string;
+    reason?: string;
+  }
+): Promise<void> {
+  const alertStatus = status === "Resolved" ? "Resolved" : "Active";
+  await env.DB.prepare(
+    `
+      UPDATE alerts
+      SET status = ?1, lifecycle_status = ?2
+      WHERE id = ?3
+    `
+  )
+    .bind(alertStatus, status, incidentId)
+    .run();
+
+  const eventTitle =
+    status === "Detected"
+      ? "Detected"
+      : status === "Analyzing"
+      ? "Analyzing"
+      : status === "Recovering"
+      ? "Recovering"
+      : status === "Resolved"
+      ? "Resolved"
+      : "Escalated";
+
+  await appendIncidentEvent(env, {
+    incidentId,
+    eventType: options?.reason ?? "status_update",
+    title: eventTitle,
+    detail: `Incident moved to ${status}.`,
+    state: status,
+    actorType: options?.actorId ? "user" : "system",
+    actorId: options?.actorId ?? null,
+  });
+
+  if (options?.workspaceId) {
+    await appendAuditLog(env, {
+      workspaceId: options.workspaceId,
+      userId: options.actorId ?? null,
+      action: "incident.status_changed",
+      entityType: "incident",
+      entityId: incidentId,
+      metadata: {
+        status,
+        reason: options.reason ?? "status_update",
+      },
+    });
+  }
+}
+
+async function getAlertById(env: Env, id: string): Promise<AlertRow | null> {
+  return env.DB.prepare(
+    `
+      SELECT id, title, source, severity, status, lifecycle_status, created_at
+      FROM alerts
+      WHERE id = ?1
+      LIMIT 1
+    `
+  )
+    .bind(id)
+    .first<AlertRow>();
+}
+
+function parsePlaybookActions(actionText: string): Array<"restart" | "scale" | "redeploy" | "failover"> {
+  const parsed = actionText
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item): item is "restart" | "scale" | "redeploy" | "failover" =>
+      ["restart", "scale", "redeploy", "failover"].includes(item)
+    );
+  return parsed.length > 0 ? parsed : ["restart"];
+}
+
+function mapServerToInfrastructureResource(server: ServerRow) {
+  const type = inferServiceType(server.name);
+  return {
+    id: server.id,
+    name: server.name,
+    type,
+    region: server.region,
+    health: server.status,
+    owner: "Infra Platform",
+    team: type === "RDS" ? "Database Reliability" : "SRE Team",
+    cpuUtilization: server.cpu,
+    memoryUtilization: server.memory,
+    requestsPerMinute: deriveRequestsPerMinute(server.id),
+    uptime: server.uptime,
+    lastEvent: server.status === "Healthy" ? "No issues detected" : "Recovery action recommended",
+  };
+}
+
+function inferServiceType(name: string): "EC2" | "ECS" | "Lambda" | "RDS" | "ALB" {
+  const lower = name.toLowerCase();
+  if (lower.includes("db")) return "RDS";
+  if (lower.includes("gateway") || lower.includes("alb") || lower.includes("edge")) return "ALB";
+  if (lower.includes("worker") || lower.includes("task") || lower.includes("service")) return "ECS";
+  if (lower.includes("lambda") || lower.includes("function")) return "Lambda";
+  return "EC2";
+}
+
+function deriveRequestsPerMinute(id: string): number {
+  let sum = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    sum += id.charCodeAt(index);
+  }
+  return 80 + (sum % 1400);
+}
+
+function mapAlertToIncident(alert: AlertRow) {
+  const lifecycleStatus = resolveLifecycleStatus(alert);
+  return {
+    id: alert.id,
+    title: alert.title,
+    severity:
+      alert.severity === "Warning"
+        ? "Medium"
+        : alert.severity === "Info"
+        ? "Low"
+        : "Critical",
+    status: lifecycleStatus,
+    source: alert.source,
+    service: inferServiceType(alert.source),
+    owner: "Platform SRE",
+    team: "Reliability",
+    detectedAt: alert.created_at,
+    recoveryAction:
+      lifecycleStatus === "Resolved"
+        ? "restart"
+        : lifecycleStatus === "Escalated"
+        ? null
+        : "scale",
+    timeline: buildIncidentTimelineWithStatus(alert, lifecycleStatus),
+  };
+}
+
+function buildIncidentTimelineWithStatus(
+  alert: AlertRow,
+  status: AlertLifecycleStatus
+) {
+  const base = buildIncidentTimeline(alert);
+  if (status === "Detected") return base;
+  if (status === "Analyzing") {
+    return base.map((item, index) => (index === 0 ? { ...item, state: "Analyzing" } : item));
+  }
+  if (status === "Escalated") {
+    return [
+      {
+        id: `${alert.id}-ev-escalated`,
+        at: new Date(new Date(alert.created_at).getTime() + 8 * 60 * 1000).toISOString(),
+        title: "Escalated",
+        detail: "Incident escalated to on-call engineering team.",
+        state: "Escalated",
+      },
+      ...base,
+    ];
+  }
+  if (status === "Resolved") {
+    return base.map((item, index) =>
+      index === 0
+        ? {
+            ...item,
+            title: "Resolved",
+            state: "Resolved",
+            detail: "Verification checks passed and incident was resolved.",
+          }
+        : item
+    );
+  }
+  return base;
+}
+
+function mapAlertToAuditRecord(alert: AlertRow, note?: AuditNoteRow) {
+  return {
+    id: `AUD-${alert.id}`,
+    incidentId: alert.id,
+    summary: `${alert.title} (${alert.source})`,
+    verificationResult: computeAuditResult(alert.id),
+    executedActions: ["restart", "scale"],
+    humanNotes:
+      note?.note ??
+      "Auto-recovery run completed. Follow-up monitoring window set for 20 minutes.",
+    updatedAt: note?.updated_at ?? alert.created_at,
+    timeline: buildIncidentTimelineWithStatus(alert, resolveLifecycleStatus(alert)),
+  };
+}
+
+function extractIncidentIdFromAuditId(auditId: string): string | null {
+  if (auditId.startsWith("AUD-")) {
+    return auditId.slice(4);
+  }
+  return auditId || null;
+}
+
+function buildIncidentExportReport(alert: AlertRow, note: string): string {
+  return [
+    `Incident: ${alert.id}`,
+    `Title: ${alert.title}`,
+    `Source: ${alert.source}`,
+    `Severity: ${alert.severity}`,
+    `Status: ${resolveLifecycleStatus(alert)}`,
+    `Detected At: ${alert.created_at}`,
+    "Owner: Platform SRE",
+    "Team: Reliability",
+    `Notes: ${note || "N/A"}`,
+  ].join("\n");
+}
+
+function buildOverviewRegions(servers: ServerRow[], alerts: AlertRow[]) {
+  const regionMap = new Map<string, { total: number; degraded: number }>();
+  for (const server of servers) {
+    const current = regionMap.get(server.region) ?? { total: 0, degraded: 0 };
+    current.total += 1;
+    if (server.status !== "Healthy") {
+      current.degraded += 1;
+    }
+    regionMap.set(server.region, current);
+  }
+
+  const regions = Array.from(regionMap.entries()).map(([region, stats]) => {
+    const activeIncidents = alerts.filter(
+      (alert) =>
+        alert.status !== "Resolved" &&
+        alert.source.toLowerCase().includes(region.split("-")[0] ?? "")
+    ).length;
+    const scoreBase = 98 - stats.degraded * 7;
+    return {
+      region,
+      healthScore: clampNumber(scoreBase, 60, 99),
+      activeIncidents,
+      recoveryRunning: Math.min(1, stats.degraded),
+    };
+  });
+
+  if (regions.length === 0) {
+    return [
+      { region: "us-east-1", healthScore: 95, activeIncidents: 0, recoveryRunning: 0 },
+      { region: "eu-west-1", healthScore: 92, activeIncidents: 0, recoveryRunning: 0 },
+      { region: "ap-south-1", healthScore: 90, activeIncidents: 0, recoveryRunning: 0 },
+    ];
+  }
+  return regions;
 }
 
 function makeReadableToken(length: number): string {

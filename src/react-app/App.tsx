@@ -30,8 +30,8 @@ export default function App() {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <AwsOpsProvider>
-          <AuthProvider>
+        <AuthProvider>
+          <AwsOpsProvider>
             <Router>
               <Routes>
                 <Route path="/" element={<HomePage />} />
@@ -94,8 +94,8 @@ export default function App() {
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Router>
-          </AuthProvider>
-        </AwsOpsProvider>
+          </AwsOpsProvider>
+        </AuthProvider>
       </ToastProvider>
     </ThemeProvider>
   );

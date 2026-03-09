@@ -11,7 +11,7 @@ import {
   getMetrics,
   getResources,
   subscribeMetricsSnapshots,
-} from "@/react-app/lib/aws-mock-service";
+} from "@/react-app/lib/aws-api";
 import type {
   AwsServiceType,
   InfrastructureResource,
@@ -120,7 +120,6 @@ export default function MetricsPage() {
 
   useEffect(() => {
     if (!liveMode) return;
-    if (!data) return;
 
     const unsubscribe = subscribeMetricsSnapshots((snapshot) => {
       setLatestSnapshot(snapshot);
@@ -148,7 +147,7 @@ export default function MetricsPage() {
     return () => {
       unsubscribe();
     };
-  }, [data, liveMode]);
+  }, [liveMode]);
 
   if (isConfigLoading || !config) {
     return (
@@ -227,6 +226,7 @@ export default function MetricsPage() {
             <div className="flex flex-wrap items-center gap-2">
               <select
                 className={`${selectClassName} w-36`}
+                aria-label="Filter metrics by region"
                 value={filters.region}
                 onChange={(event) =>
                   setFilters((prev) => ({ ...prev, region: event.target.value }))
@@ -240,6 +240,7 @@ export default function MetricsPage() {
               </select>
               <select
                 className={`${selectClassName} w-36`}
+                aria-label="Filter metrics by service"
                 value={filters.service}
                 onChange={(event) =>
                   setFilters((prev) => ({
@@ -256,6 +257,7 @@ export default function MetricsPage() {
               </select>
               <select
                 className={`${selectClassName} w-56`}
+                aria-label="Filter metrics by resource"
                 value={filters.resourceId}
                 onChange={(event) =>
                   setFilters((prev) => ({ ...prev, resourceId: event.target.value }))
@@ -284,6 +286,7 @@ export default function MetricsPage() {
             </Tabs>
             <select
               className={`${selectClassName} w-44`}
+              aria-label="Compare metrics range"
               value={compareRange}
               onChange={(event) => setCompareRange(event.target.value as MetricsCompareRange)}
             >

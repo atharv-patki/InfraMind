@@ -17,7 +17,7 @@ import {
   getPlaybooks,
   runPlaybook,
   updatePlaybookEnabled,
-} from "@/react-app/lib/aws-mock-service";
+} from "@/react-app/lib/aws-api";
 import type { RecoveryActionType, RecoveryPlaybook } from "@/react-app/lib/aws-contracts";
 
 const recoveryActions: RecoveryActionType[] = ["restart", "scale", "redeploy", "failover"];
@@ -371,7 +371,7 @@ export default function AutoHealingPage() {
                           {action}
                         </Badge>
                         {index < playbook.actions.length - 1 ? (
-                          <span className="text-xs text-muted-foreground">→</span>
+                          <span className="text-xs text-muted-foreground">-&gt;</span>
                         ) : null}
                       </div>
                     ))}

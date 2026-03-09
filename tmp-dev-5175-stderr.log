@@ -1,0 +1,52 @@
+[2mDefault inspector port 9229 not available, using 9230 instead
+[22m
+Login failed: Error: D1_ERROR: no such column: workspace_id at offset 95: SQLITE_ERROR
+    at D1DatabaseSessionAlwaysPrimary._sendOrThrow (cloudflare-internal:d1-api:139:19)
+    at cloudflare-internal:d1-api:353:41
+    ... 6 lines matching cause stack trace ...
+    at maybeCaptureError (workers/runner-worker.js:49:10) {
+  [cause]: Error: no such column: workspace_id at offset 95: SQLITE_ERROR
+      at D1DatabaseSessionAlwaysPrimary._sendOrThrow (cloudflare-internal:d1-api:140:24)
+      at cloudflare-internal:d1-api:353:41
+      at ensureSchema (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:2738:3)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:340:5
+      at dispatch (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:36:17)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:229:3
+      at dispatch (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:36:17)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:714:25
+      at maybeCaptureError (workers/runner-worker.js:49:10)
+}
+Register failed: Error: D1_ERROR: no such column: workspace_id at offset 95: SQLITE_ERROR
+    at D1DatabaseSessionAlwaysPrimary._sendOrThrow (cloudflare-internal:d1-api:139:19)
+    at cloudflare-internal:d1-api:353:41
+    ... 6 lines matching cause stack trace ...
+    at maybeCaptureError (workers/runner-worker.js:49:10) {
+  [cause]: Error: no such column: workspace_id at offset 95: SQLITE_ERROR
+      at D1DatabaseSessionAlwaysPrimary._sendOrThrow (cloudflare-internal:d1-api:140:24)
+      at cloudflare-internal:d1-api:353:41
+      at ensureSchema (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:2738:3)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:250:5
+      at dispatch (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:36:17)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:229:3
+      at dispatch (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:36:17)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:714:25
+      at maybeCaptureError (workers/runner-worker.js:49:10)
+}
+Register failed: Error: D1_ERROR: no such column: workspace_id at offset 95: SQLITE_ERROR
+    at D1DatabaseSessionAlwaysPrimary._sendOrThrow (cloudflare-internal:d1-api:139:19)
+    at cloudflare-internal:d1-api:353:41
+    ... 6 lines matching cause stack trace ...
+    at maybeCaptureError (workers/runner-worker.js:49:10) {
+  [cause]: Error: no such column: workspace_id at offset 95: SQLITE_ERROR
+      at D1DatabaseSessionAlwaysPrimary._sendOrThrow (cloudflare-internal:d1-api:140:24)
+      at cloudflare-internal:d1-api:353:41
+      at ensureSchema (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:2738:3)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:250:5
+      at dispatch (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:36:17)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:229:3
+      at dispatch (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:36:17)
+      at C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/node_modules/.vite/deps_019cb39f_b637_7f39_973d_e4c448663f3e/chunk-B7OURS62.js:714:25
+      at maybeCaptureError (workers/runner-worker.js:49:10)
+}
+Welcome email failed: Error: Resend API 403: {"statusCode":403,"name":"validation_error","message":"You can only send testing emails to your own email address (patkiatharv@gmail.com). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain."}
+    at sendWelcomeEmail (C:/Users/Admin/OneDrive/Desktop/InfraMind AI - Intelligent Cloud Infrastructure Monitoring/src/worker/index.ts:3186:11)

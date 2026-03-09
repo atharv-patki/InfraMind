@@ -29,8 +29,9 @@ import {
   acknowledgeIncident,
   escalateIncident,
   getAlerts,
+  subscribeAlertsSnapshots,
   updateAlertStatus,
-} from "@/react-app/lib/aws-mock-service";
+} from "@/react-app/lib/aws-api";
 import type { AlertIncident, IncidentSeverity, IncidentStatus } from "@/react-app/lib/aws-contracts";
 
 const selectClassName =
@@ -65,9 +66,11 @@ export default function AlertsPage() {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [inFlightIncidentId, setInFlightIncidentId] = useState<string | null>(null);
 
-  const loadIncidents = useCallback(async () => {
+  const loadIncidents = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true);
+      if (!silent) {
+        setIsLoading(true);
+      }
       setError("");
       const data = await getAlerts();
       setIncidents(data);
@@ -75,7 +78,9 @@ export default function AlertsPage() {
       const message = err instanceof Error ? err.message : "Unable to load incidents.";
       setError(message);
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -85,6 +90,21 @@ export default function AlertsPage() {
       return;
     }
     void loadIncidents();
+  }, [config, loadIncidents]);
+
+  useEffect(() => {
+    if (!config) return;
+    if (config.connectionStatus === "disconnected" || config.connectionStatus === "permission_denied") {
+      return;
+    }
+
+    const unsubscribe = subscribeAlertsSnapshots(() => {
+      void loadIncidents(true);
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [config, loadIncidents]);
 
   const selectedIncident = useMemo(
@@ -227,11 +247,13 @@ export default function AlertsPage() {
               <Input
                 className="w-64"
                 placeholder="Search id, title, team, owner"
+                aria-label="Search incidents"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
               <select
                 className={`${selectClassName} w-40`}
+                aria-label="Filter incidents by severity"
                 value={severityFilter}
                 onChange={(event) =>
                   setSeverityFilter(event.target.value as IncidentSeverity | "All")
@@ -245,6 +267,7 @@ export default function AlertsPage() {
               </select>
               <select
                 className={`${selectClassName} w-40`}
+                aria-label="Filter incidents by status"
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value as IncidentStatus | "All")}
               >
@@ -367,7 +390,7 @@ export default function AlertsPage() {
                 <article className="rounded-xl border border-border bg-secondary/30 p-3 text-sm">
                   <p className="font-medium">Ownership</p>
                   <p className="mt-1 text-muted-foreground">
-                    {selectedIncident.owner} · {selectedIncident.team}
+                    {selectedIncident.owner} | {selectedIncident.team}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Source: {selectedIncident.source} ({selectedIncident.service})
@@ -427,3 +450,4 @@ function SeverityBadge({ severity }: { severity: IncidentSeverity }) {
   }
   return <Badge variant="outline">Low</Badge>;
 }
+

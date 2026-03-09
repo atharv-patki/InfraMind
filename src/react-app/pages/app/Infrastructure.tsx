@@ -27,7 +27,7 @@ import { useToast } from "@/react-app/context/ToastContext";
 import {
   getResources,
   runResourceQuickAction,
-} from "@/react-app/lib/aws-mock-service";
+} from "@/react-app/lib/aws-api";
 import type {
   AwsServiceType,
   InfrastructureResource,
@@ -206,12 +206,14 @@ export default function InfrastructurePage() {
                 <Input
                   className="w-64 pl-9"
                   placeholder="Search name, id, owner"
+                  aria-label="Search resources by name, id, or owner"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                 />
               </div>
               <select
                 className={`${selectClassName} w-36`}
+                aria-label="Filter resources by region"
                 value={regionFilter}
                 onChange={(event) => setRegionFilter(event.target.value)}
               >

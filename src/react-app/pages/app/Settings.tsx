@@ -165,6 +165,7 @@ export default function SettingsPage() {
                 />
                 <select
                   value={region}
+                  aria-label="AWS region"
                   onChange={(event) => setRegion(event.target.value)}
                   className={selectClassName}
                 >
@@ -175,6 +176,7 @@ export default function SettingsPage() {
                 </select>
                 <select
                   value={environment}
+                  aria-label="AWS environment"
                   onChange={(event) => setEnvironment(event.target.value as AwsEnvironment)}
                   className={selectClassName}
                 >
@@ -335,6 +337,7 @@ export default function SettingsPage() {
                 <p className="text-sm font-medium mb-2">Theme</p>
                 <select
                   value={theme}
+                  aria-label="Theme selection"
                   onChange={(event) => setTheme(event.target.value as "system" | "light" | "dark")}
                   className={selectClassName}
                 >

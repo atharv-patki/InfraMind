@@ -5,7 +5,7 @@ import { Badge } from "@/react-app/components/ui/badge";
 import { useAwsOps } from "@/react-app/context/AwsOpsContext";
 import { DataStateCard } from "@/react-app/components/dashboard/DataStateCard";
 import { OpsStatusBadge } from "@/react-app/components/dashboard/OpsStatusBadge";
-import { getOverviewData } from "@/react-app/lib/aws-mock-service";
+import { getOverviewData, subscribeAlertsSnapshots } from "@/react-app/lib/aws-api";
 import type { OverviewData } from "@/react-app/lib/aws-contracts";
 
 export default function OverviewPage() {
@@ -14,9 +14,11 @@ export default function OverviewPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const loadOverview = useCallback(async () => {
+  const loadOverview = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true);
+      if (!silent) {
+        setIsLoading(true);
+      }
       setError("");
       const data = await getOverviewData();
       setOverview(data);
@@ -24,13 +26,30 @@ export default function OverviewPage() {
       const message = err instanceof Error ? err.message : "Unable to load overview.";
       setError(message);
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void loadOverview();
   }, [loadOverview]);
+
+  useEffect(() => {
+    if (!config) return;
+    if (config.connectionStatus === "disconnected" || config.connectionStatus === "permission_denied") {
+      return;
+    }
+
+    const unsubscribe = subscribeAlertsSnapshots(() => {
+      void loadOverview(true);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [config, loadOverview]);
 
   const statusTone = useMemo(() => {
     if (!config) return "disconnected";

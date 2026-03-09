@@ -154,3 +154,8 @@ export type MetricsSnapshot = {
   responseTime: number;
 };
 
+export type AlertsStreamSnapshot = {
+  at: string;
+  activeAlerts: number;
+  signal: "attention" | "normal";
+};

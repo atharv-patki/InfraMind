@@ -5,7 +5,8 @@ import {
   disconnectAws,
   getOpsConfig,
   updateOpsConfig,
-} from "@/react-app/lib/aws-mock-service";
+} from "@/react-app/lib/aws-api";
+import { useAuth } from "@/react-app/context/AuthContext";
 
 type AwsOpsContextValue = {
   config: AwsOpsConfig | null;
@@ -20,12 +21,46 @@ type AwsOpsContextValue = {
 
 const AwsOpsContext = createContext<AwsOpsContextValue | null>(null);
 
+const fallbackConfig: AwsOpsConfig = {
+  accountId: "123456789012",
+  region: "us-east-1",
+  environment: "prod",
+  connectionStatus: "disconnected",
+  autoRecoveryEnabled: true,
+  alertChannels: {
+    email: true,
+    sms: false,
+    slack: true,
+    teams: false,
+  },
+  iamPermissions: [
+    {
+      name: "cloudwatch:GetMetricData",
+      status: "unknown",
+      detail: "Waiting for AWS connectivity checks.",
+    },
+    {
+      name: "ecs:UpdateService",
+      status: "unknown",
+      detail: "Waiting for AWS connectivity checks.",
+    },
+  ],
+};
+
 export function AwsOpsProvider({ children }: { children: React.ReactNode }) {
-  const [config, setConfig] = useState<AwsOpsConfig | null>(null);
+  const { user, isPending: isAuthPending } = useAuth();
+  const [config, setConfig] = useState<AwsOpsConfig | null>(fallbackConfig);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
+    if (!user) {
+      setConfig(fallbackConfig);
+      setError("");
+      setIsLoading(false);
+      return;
+    }
+
     try {
       setIsLoading(true);
       setError("");
@@ -34,14 +69,16 @@ export function AwsOpsProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to load AWS settings.";
       setError(message);
+      setConfig((current) => current ?? fallbackConfig);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
+    if (isAuthPending) return;
     void refresh();
-  }, [refresh]);
+  }, [isAuthPending, refresh]);
 
   const connect = useCallback(async () => {
     try {

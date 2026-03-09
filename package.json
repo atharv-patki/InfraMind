@@ -41,10 +41,16 @@
   },
   "scripts": {
     "build": "tsc -b && vite build",
+    "ci": "npm run lint && npm run typecheck && npm run build",
+    "db:migrate:local": "wrangler d1 execute 019cb39f-b637-7f39-973d-e4c448663f3e --local --file db/migrations/001_init.sql",
+    "db:seed:local": "wrangler d1 execute 019cb39f-b637-7f39-973d-e4c448663f3e --local --file db/seeds/001_demo_seed.sql",
     "cf-typegen": "wrangler types",
     "check": "tsc && vite build && wrangler deploy --dry-run",
     "dev": "vite",
     "knip": "knip",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck:app && npm run typecheck:worker",
+    "typecheck:app": "tsc --noEmit -p tsconfig.app.json",
+    "typecheck:worker": "tsc --noEmit -p tsconfig.worker.json"
   }
 }

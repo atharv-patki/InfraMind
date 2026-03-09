@@ -1,0 +1,22 @@
+
+> mocha-app@0.0.0 dev
+> vite --port 5175 --host 127.0.0.1 --clearScreen false
+
+Using vars defined in .dev.vars
+
+  [32m[1mVITE[22m v7.3.1[39m  [2mready in [0m[1m4057[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5175[22m/[39m
+  [32m➜[39m  [1mDebug[22m:   [2m[33mhttp://127.0.0.1:[1m5175[22m[2m/__debug[39m[22m
+POST /api/auth/login -> 500 (171ms)
+POST /api/auth/register -> 500 (121ms)
+POST /api/auth/register -> 500 (118ms)
+[2m3:40:31 pm[22m [36m[1m[vite][22m[39m [34m[2m(019cb39f_b637_7f39_973d_e4c448663f3e)[22m[39m [32mhmr update [39m[2m/@id/virtual:cloudflare/worker-entry[22m
+[vite] hot updated: virtual:cloudflare/worker-entry
+[2m3:40:45 pm[22m [36m[1m[vite][22m[39m [34m[2m(019cb39f_b637_7f39_973d_e4c448663f3e)[22m[39m [32mhmr update [39m[2m/@id/virtual:cloudflare/worker-entry[22m
+[vite] hot updated: virtual:cloudflare/worker-entry
+POST /api/auth/register -> 400 (222ms)
+POST /api/auth/login -> 400 (3ms)
+POST /api/auth/register -> 400 (2ms)
+POST /api/auth/register -> 201 (182ms)
+POST /api/auth/login -> 200 (171ms)
