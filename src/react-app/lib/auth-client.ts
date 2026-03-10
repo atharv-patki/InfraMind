@@ -13,14 +13,14 @@ export type AuthUser = {
 export type RegisterResult = {
   user: AuthUser;
   message?: string;
-  welcomeEmailStatus?: "queued" | "disabled";
+  welcomeEmailStatus?: "queued" | "disabled" | "failed";
 };
 
 type AuthResponse = {
   user?: AuthUser;
   error?: string;
   message?: string;
-  welcomeEmailStatus?: "queued" | "disabled";
+  welcomeEmailStatus?: "queued" | "disabled" | "failed";
 };
 
 export async function loginWithPassword(payload: {

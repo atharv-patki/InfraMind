@@ -1,10 +1,9 @@
-import { Navigate, Outlet, useLocation } from "react-router";
+import { Navigate, Outlet } from "react-router";
 import { useAuth } from "@/react-app/context/AuthContext";
 import { Activity } from "lucide-react";
 
 export default function ProtectedRoute() {
   const { user, isPending } = useAuth();
-  const location = useLocation();
 
   if (isPending) {
     return (
@@ -20,14 +19,7 @@ export default function ProtectedRoute() {
   }
 
   if (!user) {
-    return (
-      <Navigate
-        to={`/login?next=${encodeURIComponent(
-          location.pathname + location.search + location.hash
-        )}`}
-        replace
-      />
-    );
+    return <Navigate to="/" replace />;
   }
 
   return <Outlet />;

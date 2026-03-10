@@ -22,7 +22,9 @@ import { Button } from "@/react-app/components/ui/button";
 import { Badge } from "@/react-app/components/ui/badge";
 import { useAuth } from "@/react-app/context/AuthContext";
 import { useAwsOps } from "@/react-app/context/AwsOpsContext";
+import { useWorkspace } from "@/react-app/context/WorkspaceContext";
 import { GlobalOpsBanner } from "@/react-app/components/dashboard/GlobalOpsBanner";
+import { logoutUser } from "@/react-app/lib/auth-client";
 import {
   getPlanLabel,
   hasPlanAccess,
@@ -91,7 +93,8 @@ export default function DashboardLayout() {
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
+  const { role } = useWorkspace();
   const { config } = useAwsOps();
   const displayName = user?.firstName ?? "User";
   const userPlan = user?.plan ?? "starter";
@@ -108,9 +111,11 @@ export default function DashboardLayout() {
     try {
       setIsSigningOut(true);
       await new Promise((resolve) => window.setTimeout(resolve, 550));
-      await logout();
+      await logoutUser();
+    } catch (error) {
+      console.error("Sign out failed:", error);
     } finally {
-      setIsSigningOut(false);
+      window.location.replace("/login?logged_out=1");
     }
   };
 
@@ -159,6 +164,11 @@ export default function DashboardLayout() {
                 <Badge variant="secondary" className="inline-flex">
                   {displayName}
                 </Badge>
+                {role ? (
+                  <Badge variant="outline" className="hidden sm:inline-flex">
+                    {role}
+                  </Badge>
+                ) : null}
                 <Badge variant="outline" className="hidden sm:inline-flex">
                   {getPlanLabel(userPlan)}
                 </Badge>

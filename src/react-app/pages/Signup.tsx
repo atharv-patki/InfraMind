@@ -48,8 +48,7 @@ export default function Signup() {
         password,
         plan: selectedPlan,
       });
-      const welcomeParam =
-        result.welcomeEmailStatus === "disabled" ? "disabled" : "queued";
+      const welcomeParam = result.welcomeEmailStatus ?? "disabled";
       navigate(
         `/login?registered=1&welcome=${welcomeParam}&email=${encodeURIComponent(email.trim())}&plan=${result.user.plan}`,
         { replace: true }
@@ -139,11 +138,12 @@ export default function Signup() {
             <p className="mt-2 text-xs text-muted-foreground">{planDescription(selectedPlan)}</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" aria-busy={isSubmitting || isFetching}>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
-                <label className="text-sm font-medium">First name</label>
+                <label htmlFor="signup-first-name" className="text-sm font-medium">First name</label>
                 <Input
+                  id="signup-first-name"
                   value={firstName}
                   onChange={(event) => setFirstName(event.target.value)}
                   autoComplete="given-name"
@@ -151,8 +151,9 @@ export default function Signup() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Last name</label>
+                <label htmlFor="signup-last-name" className="text-sm font-medium">Last name</label>
                 <Input
+                  id="signup-last-name"
                   value={lastName}
                   onChange={(event) => setLastName(event.target.value)}
                   autoComplete="family-name"
@@ -162,8 +163,9 @@ export default function Signup() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+              <label htmlFor="signup-email" className="text-sm font-medium">Email</label>
               <Input
+                id="signup-email"
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
@@ -173,8 +175,9 @@ export default function Signup() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Password</label>
+              <label htmlFor="signup-password" className="text-sm font-medium">Password</label>
               <Input
+                id="signup-password"
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -184,8 +187,9 @@ export default function Signup() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Confirm password</label>
+              <label htmlFor="signup-confirm-password" className="text-sm font-medium">Confirm password</label>
               <Input
+                id="signup-confirm-password"
                 type="password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
@@ -194,12 +198,17 @@ export default function Signup() {
               />
             </div>
 
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            {error ? (
+              <p className="text-sm text-destructive" role="alert" aria-live="assertive">
+                {error}
+              </p>
+            ) : null}
 
             <Button
               type="submit"
               disabled={isSubmitting || isFetching || isPending}
               className="w-full h-11"
+              aria-label="Create account"
             >
               {isSubmitting || isFetching ? "Creating account..." : "Create Account"}
             </Button>

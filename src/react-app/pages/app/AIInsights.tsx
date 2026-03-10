@@ -10,6 +10,10 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/react-app/components/ui/card";
 import { Badge } from "@/react-app/components/ui/badge";
 import { Button } from "@/react-app/components/ui/button";
+import { DataStateCard } from "@/react-app/components/dashboard/DataStateCard";
+import { PageSkeleton } from "@/react-app/components/dashboard/PageSkeleton";
+import { useAwsOps } from "@/react-app/context/AwsOpsContext";
+import { useWorkspace } from "@/react-app/context/WorkspaceContext";
 import {
   getAIAnomalies,
   getAIPredictions,
@@ -21,6 +25,8 @@ import {
 } from "@/react-app/lib/api";
 
 export default function AIInsightsPage() {
+  const { config } = useAwsOps();
+  const { hasRole, role } = useWorkspace();
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [forecastPoints, setForecastPoints] = useState<number[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
@@ -61,6 +67,9 @@ export default function AIInsightsPage() {
     [anomalies]
   );
 
+  const hasData = anomalies.length > 0 || forecastPoints.length > 0 || recommendations.length > 0;
+  const canUpdateRecommendations = hasRole(["owner", "admin", "engineer"]);
+
   const toggleRecommendation = async (id: string) => {
     const target = recommendations.find((item) => item.id === id);
     if (!target) return;
@@ -77,15 +86,68 @@ export default function AIInsightsPage() {
     }
   };
 
+  if (!config || config.connectionStatus === "disconnected") {
+    return (
+      <DataStateCard
+        state="disconnected"
+        title="AWS account is disconnected"
+        detail="Connect account from Settings to enable AI signals and recommendations."
+      />
+    );
+  }
+
+  if (config.connectionStatus === "permission_denied") {
+    return (
+      <DataStateCard
+        state="permission"
+        title="IAM permission check failed"
+        detail="AI insights require access to AWS monitoring data and incident metadata."
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <PageSkeleton cards={4} rows={6} />;
+  }
+
+  if (loadError) {
+    return (
+      <DataStateCard
+        state="error"
+        title="AI insights unavailable"
+        detail={loadError}
+        onRetry={() => void loadAIData()}
+      />
+    );
+  }
+
+  if (!hasData) {
+    return (
+      <DataStateCard
+        state="empty"
+        title="No AI signals available yet"
+        detail="Telemetry samples are still warming up. Retry in a moment."
+        onRetry={() => void loadAIData()}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {loadError ? (
+      {config.connectionStatus === "partial_outage" ? (
         <Card>
           <CardContent className="py-4 flex items-center justify-between gap-3">
-            <p className="text-sm text-destructive">{loadError}</p>
-            <Button size="sm" variant="outline" onClick={() => void loadAIData()}>
-              Retry
-            </Button>
+            <p className="text-sm text-warning">
+              Partial outage detected. AI insights may show delayed or incomplete signals.
+            </p>
+          </CardContent>
+        </Card>
+      ) : config.connectionStatus === "recovery_running" ? (
+        <Card>
+          <CardContent className="py-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-primary">
+              Auto-recovery is running. Recommendations are being recalculated.
+            </p>
           </CardContent>
         </Card>
       ) : null}
@@ -138,11 +200,7 @@ export default function AIInsightsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {isLoading ? (
-              <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                Loading anomaly data...
-              </div>
-            ) : anomalies.map((item) => (
+            {anomalies.map((item) => (
               <article
                 key={item.id}
                 className="rounded-xl border border-border bg-secondary/30 p-4 space-y-3"
@@ -151,7 +209,7 @@ export default function AIInsightsPage() {
                   <div>
                     <p className="font-medium">{item.metric}</p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {item.service} • {item.id}
+                      {item.service} - {item.id}
                     </p>
                   </div>
                   <SeverityBadge severity={item.severity} />
@@ -171,7 +229,7 @@ export default function AIInsightsPage() {
                 </div>
               </article>
             ))}
-            {!isLoading && anomalies.length === 0 ? (
+            {anomalies.length === 0 ? (
               <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
                 No anomalies detected.
               </div>
@@ -206,11 +264,7 @@ export default function AIInsightsPage() {
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
-          {isLoading ? (
-            <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-              Loading recommendations...
-            </div>
-          ) : recommendations.map((item) => (
+          {recommendations.map((item) => (
             <article
               key={item.id}
               className="rounded-xl border border-border bg-secondary/30 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4"
@@ -228,13 +282,20 @@ export default function AIInsightsPage() {
                 size="sm"
                 variant={item.done ? "outline" : "default"}
                 onClick={() => toggleRecommendation(item.id)}
+                disabled={!canUpdateRecommendations}
+                aria-label={`${item.done ? "Undo" : "Mark implemented"} recommendation: ${item.title}`}
+                title={
+                  canUpdateRecommendations
+                    ? undefined
+                    : `Recommendation updates require owner/admin/engineer role. Current role: ${role ?? "none"}.`
+                }
               >
                 <Zap className="w-4 h-4 mr-1.5" />
                 {item.done ? "Undo" : "Mark Implemented"}
               </Button>
             </article>
           ))}
-          {!isLoading && recommendations.length === 0 ? (
+          {recommendations.length === 0 ? (
             <div className="rounded-xl border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
               No recommendations available.
             </div>

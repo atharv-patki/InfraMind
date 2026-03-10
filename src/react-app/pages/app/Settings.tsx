@@ -9,23 +9,36 @@ import { Badge } from "@/react-app/components/ui/badge";
 import { useAuth } from "@/react-app/context/AuthContext";
 import { useTheme } from "@/react-app/context/ThemeContext";
 import { useAwsOps } from "@/react-app/context/AwsOpsContext";
+import { useWorkspace } from "@/react-app/context/WorkspaceContext";
 import { useToast } from "@/react-app/context/ToastContext";
 import { DataStateCard } from "@/react-app/components/dashboard/DataStateCard";
+import { getUserProfile, updateUserProfile } from "@/react-app/lib/api";
+import {
+  createWorkspaceInvitation,
+  type WorkspaceRole,
+} from "@/react-app/lib/workspace-client";
 import type { AwsEnvironment, OpsConnectionStatus } from "@/react-app/lib/aws-contracts";
 
 const selectClassName =
   "h-9 rounded-4xl border border-input bg-input/30 px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full";
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, fetchUser } = useAuth();
+  const { workspace } = useWorkspace();
   const { theme, setTheme } = useTheme();
   const { config, isLoading, error, connect, disconnect, updateConfig, setConnectionStatus, refresh } =
     useAwsOps();
   const { pushToast } = useToast();
 
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [profileRole, setProfileRole] = useState("");
+  const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [profileMessage, setProfileMessage] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isProfileLoading, setIsProfileLoading] = useState(true);
 
   const [accountId, setAccountId] = useState("");
   const [region, setRegion] = useState("us-east-1");
@@ -39,11 +52,41 @@ export default function SettingsPage() {
   });
   const [awsMessage, setAwsMessage] = useState("");
   const [isSavingAws, setIsSavingAws] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<WorkspaceRole>("viewer");
+  const [inviteMessage, setInviteMessage] = useState("");
+  const [isSendingInvite, setIsSendingInvite] = useState(false);
 
   useEffect(() => {
     if (!user) return;
-    setName([user.firstName, user.lastName].filter(Boolean).join(" "));
-    setEmail(user.email);
+    let cancelled = false;
+
+    const loadProfile = async () => {
+      try {
+        setIsProfileLoading(true);
+        const profile = await getUserProfile();
+        if (cancelled) return;
+        setFirstName(profile.firstName);
+        setLastName(profile.lastName);
+        setEmail(profile.email);
+        setCompany(profile.company);
+        setProfileRole(profile.role);
+        setTimezone(profile.timezone);
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : "Unable to load profile.";
+        setProfileMessage(message);
+      } finally {
+        if (!cancelled) {
+          setIsProfileLoading(false);
+        }
+      }
+    };
+
+    void loadProfile();
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   useEffect(() => {
@@ -92,13 +135,70 @@ export default function SettingsPage() {
     }
   };
 
-  const saveProfile = () => {
-    if (!name.trim() || !email.trim()) {
-      setProfileMessage("Name and email are required.");
+  const saveProfile = async () => {
+    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      setProfileMessage("First name, last name, and email are required.");
       return;
     }
-    setProfileMessage("Profile changes saved locally.");
-    pushToast("Profile updated.", "success");
+
+    try {
+      setIsSavingProfile(true);
+      setProfileMessage("");
+      const updated = await updateUserProfile({
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email: email.trim(),
+        company: company.trim(),
+        role: profileRole.trim(),
+        timezone: timezone.trim(),
+        theme,
+      });
+      setFirstName(updated.firstName);
+      setLastName(updated.lastName);
+      setEmail(updated.email);
+      setCompany(updated.company);
+      setProfileRole(updated.role);
+      setTimezone(updated.timezone);
+      await fetchUser();
+      setProfileMessage("Profile updated successfully.");
+      pushToast("Profile updated.", "success");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to update profile.";
+      setProfileMessage(message);
+      pushToast(message, "error");
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const sendInvite = async () => {
+    if (!inviteEmail.trim()) {
+      setInviteMessage("Invite email is required.");
+      return;
+    }
+
+    try {
+      setIsSendingInvite(true);
+      setInviteMessage("");
+      const result = await createWorkspaceInvitation({
+        email: inviteEmail.trim(),
+        role: inviteRole,
+      });
+      setInviteMessage(
+        result.invitationEmailStatus === "queued"
+          ? "Invitation email queued successfully."
+          : "Invitation created. Email provider is not configured in this environment."
+      );
+      pushToast("Workspace invitation created.", "success");
+      setInviteEmail("");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Unable to send workspace invitation.";
+      setInviteMessage(message);
+      pushToast(message, "error");
+    } finally {
+      setIsSendingInvite(false);
+    }
   };
 
   const simulateState = async (status: OpsConnectionStatus) => {
@@ -140,6 +240,7 @@ export default function SettingsPage() {
           <TabsTrigger value="aws">AWS Integration</TabsTrigger>
           <TabsTrigger value="iam">IAM Status</TabsTrigger>
           <TabsTrigger value="profile">Profile</TabsTrigger>
+          <TabsTrigger value="team">Team</TabsTrigger>
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
         </TabsList>
 
@@ -308,20 +409,103 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="profile">
+        <TabsContent value="team">
           <Card>
             <CardHeader className="border-b border-border/70">
               <CardTitle>User Profile</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid md:grid-cols-2 gap-3">
-                <Input value={name} onChange={(event) => setName(event.target.value)} />
-                <Input value={email} onChange={(event) => setEmail(event.target.value)} />
-              </div>
+              {isProfileLoading ? (
+                <p className="text-sm text-muted-foreground">Loading profile...</p>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <Input
+                      value={firstName}
+                      onChange={(event) => setFirstName(event.target.value)}
+                      placeholder="First name"
+                    />
+                    <Input
+                      value={lastName}
+                      onChange={(event) => setLastName(event.target.value)}
+                      placeholder="Last name"
+                    />
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <Input
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      placeholder="Email"
+                      type="email"
+                    />
+                    <Input
+                      value={company}
+                      onChange={(event) => setCompany(event.target.value)}
+                      placeholder="Company"
+                    />
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <Input
+                      value={profileRole}
+                      onChange={(event) => setProfileRole(event.target.value)}
+                      placeholder="Profile role"
+                    />
+                    <Input
+                      value={timezone}
+                      onChange={(event) => setTimezone(event.target.value)}
+                      placeholder="Timezone"
+                    />
+                  </div>
+                </div>
+              )}
               {profileMessage ? <p className="text-sm text-muted-foreground">{profileMessage}</p> : null}
-              <Button onClick={saveProfile}>
-                <ShieldCheck className="w-4 h-4 mr-1.5" />
+              <Button onClick={() => void saveProfile()} disabled={isSavingProfile || isProfileLoading}>
+                {isSavingProfile ? (
+                  <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4 mr-1.5" />
+                )}
                 Save Profile
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="profile">
+          <Card>
+            <CardHeader className="border-b border-border/70">
+              <CardTitle>Team Invitations</CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                Invite members to {workspace?.name ?? "your workspace"} with role-based access.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid md:grid-cols-[1fr_180px] gap-3">
+                <Input
+                  value={inviteEmail}
+                  onChange={(event) => setInviteEmail(event.target.value)}
+                  placeholder="teammate@company.com"
+                  type="email"
+                />
+                <select
+                  className={selectClassName}
+                  value={inviteRole}
+                  aria-label="Invite role"
+                  onChange={(event) => setInviteRole(event.target.value as WorkspaceRole)}
+                >
+                  <option value="viewer">viewer</option>
+                  <option value="engineer">engineer</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+              {inviteMessage ? <p className="text-sm text-muted-foreground">{inviteMessage}</p> : null}
+              <Button onClick={() => void sendInvite()} disabled={isSendingInvite}>
+                {isSendingInvite ? (
+                  <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4 mr-1.5" />
+                )}
+                Send Invitation
               </Button>
             </CardContent>
           </Card>

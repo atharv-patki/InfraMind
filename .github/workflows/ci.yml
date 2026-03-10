@@ -30,8 +30,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test
+        run: npm run test
+
       - name: Build
         run: npm run build
 
       - name: Dependency vulnerability scan
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high

@@ -1,5 +1,10 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   first_name TEXT NOT NULL,
@@ -103,6 +108,20 @@ CREATE TABLE IF NOT EXISTS alerts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS incident_detection_rules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  metric TEXT NOT NULL CHECK (metric IN ('error_rate', 'response_time', 'cpu', 'memory', 'disk', 'network', 'active_alerts')),
+  operator TEXT NOT NULL CHECK (operator IN ('gt', 'gte', 'lt', 'lte')),
+  threshold REAL NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('Critical', 'Warning', 'Info')),
+  cooldown_minutes INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_triggered_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS incident_events (
   id TEXT PRIMARY KEY,
   incident_id TEXT NOT NULL,
@@ -144,28 +163,40 @@ CREATE TABLE IF NOT EXISTS playbook_executions (
   FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS notification_channels (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('email', 'sms', 'slack', 'teams')),
-  target TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+CREATE TABLE IF NOT EXISTS playbook_execution_locks (
+  lock_key TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS notification_deliveries (
   id TEXT PRIMARY KEY,
-  channel_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
   incident_id TEXT,
+  channel_type TEXT NOT NULL CHECK (channel_type IN ('email', 'sms', 'slack', 'teams')),
+  target TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('queued', 'sent', 'failed', 'dropped')),
   provider_message_id TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 1,
   error_message TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+  FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_dead_letters (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  incident_id TEXT,
+  channel_type TEXT NOT NULL CHECK (channel_type IN ('email', 'sms', 'slack', 'teams')),
+  target TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
   FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE SET NULL
 );
 
@@ -221,13 +252,65 @@ CREATE TABLE IF NOT EXISTS incident_audit_notes (
   FOREIGN KEY (incident_id) REFERENCES alerts(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS usage_counters (
+  user_id TEXT NOT NULL,
+  period TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, period, metric),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS quota_alert_events (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  period TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  threshold_percent INTEGER NOT NULL,
+  current_value INTEGER NOT NULL,
+  limit_value INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS billing_subscriptions (
+  user_id TEXT PRIMARY KEY,
+  plan TEXT NOT NULL CHECK (plan IN ('starter', 'pro', 'enterprise')),
+  status TEXT NOT NULL CHECK (status IN ('trialing', 'active', 'past_due', 'canceled')),
+  provider_customer_id TEXT,
+  provider_subscription_id TEXT,
+  renews_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS abuse_events (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL CHECK (scope IN ('signup', 'invite', 'mail')),
+  actor_key TEXT NOT NULL,
+  email TEXT NOT NULL,
+  ip_address TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_memberships_workspace ON memberships(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
 CREATE INDEX IF NOT EXISTS idx_servers_region ON servers(region);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
 CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at);
+CREATE INDEX IF NOT EXISTS idx_incident_detection_rules_enabled ON incident_detection_rules(enabled, updated_at);
 CREATE INDEX IF NOT EXISTS idx_incident_events_incident ON incident_events(incident_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playbook_executions_playbook ON playbook_executions(playbook_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel ON notification_deliveries(channel_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_playbook_execution_locks_expires_at ON playbook_execution_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_workspace ON notification_deliveries(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_notification_dead_letters_workspace ON notification_dead_letters(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace ON audit_logs(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_counters_user_period ON usage_counters(user_id, period);
+CREATE INDEX IF NOT EXISTS idx_quota_alert_events_user_period ON quota_alert_events(user_id, period, updated_at);
+CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_status ON billing_subscriptions(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_abuse_events_scope_created ON abuse_events(scope, created_at);

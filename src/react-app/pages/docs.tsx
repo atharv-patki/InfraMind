@@ -213,12 +213,12 @@ export default function Docs() {
                     </ul>
                   </div>
                   <div className="rounded-xl border border-border bg-card p-5">
-                    <h3 className="font-semibold">Planned Backend Stack</h3>
+                    <h3 className="font-semibold">Current API and Runtime Stack</h3>
                     <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-                      <li>Node.js and Express REST API</li>
-                      <li>PostgreSQL or MongoDB persistence</li>
-                      <li>JWT auth with protected app routes</li>
-                      <li>WebSocket metric streaming and AI services</li>
+                      <li>Cloudflare Worker REST API with typed contracts</li>
+                      <li>D1-backed local and staging data workflows</li>
+                      <li>Session auth with protected app routes</li>
+                      <li>SSE-based metric and alert streams</li>
                     </ul>
                   </div>
                 </div>

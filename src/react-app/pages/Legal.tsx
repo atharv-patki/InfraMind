@@ -27,6 +27,13 @@ const legalSections = [
     content:
       "InfraMind follows secure development practices, least-privilege access, audit logs, and incident response procedures for platform protection.",
   },
+  {
+    id: "dpa",
+    title: "Data Processing Addendum (DPA)",
+    icon: Scale,
+    content:
+      "A DPA workflow is available for business customers handling regulated workloads. Contact support to initiate review and execution.",
+  },
 ];
 
 export default function LegalPage() {

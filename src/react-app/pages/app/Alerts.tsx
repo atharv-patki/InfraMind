@@ -292,16 +292,16 @@ export default function AlertsPage() {
               detail="Adjust severity or status filters."
             />
           ) : (
-            <Table>
+            <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Incident</TableHead>
-                  <TableHead>Severity</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Owner / Team</TableHead>
-                  <TableHead>Service</TableHead>
-                  <TableHead>Detected</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead className="w-[30%]">Incident</TableHead>
+                  <TableHead className="w-[7%]">Severity</TableHead>
+                  <TableHead className="w-[9%]">Status</TableHead>
+                  <TableHead className="w-[13%] whitespace-normal">Owner / Team</TableHead>
+                  <TableHead className="w-[12%] whitespace-normal">Service</TableHead>
+                  <TableHead className="w-[11%]">Detected</TableHead>
+                  <TableHead className="w-[18%] text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -309,29 +309,29 @@ export default function AlertsPage() {
                   const isBusy = inFlightIncidentId === incident.id;
                   return (
                     <TableRow key={incident.id}>
-                      <TableCell>
+                      <TableCell className="align-top whitespace-normal break-words">
                         <p className="font-medium">{incident.title}</p>
                         <p className="mt-1 text-xs text-muted-foreground">{incident.id}</p>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="align-top">
                         <SeverityBadge severity={incident.severity} />
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="align-top">
                         <OpsStatusBadge status={incident.status} />
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="align-top whitespace-normal break-words">
                         <p className="text-sm">{incident.owner}</p>
                         <p className="text-xs text-muted-foreground">{incident.team}</p>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="align-top whitespace-normal break-words">
                         <p className="text-sm">{incident.service}</p>
                         <p className="text-xs text-muted-foreground">{incident.source}</p>
                       </TableCell>
-                      <TableCell>
-                        {new Date(incident.detectedAt).toLocaleString()}
+                      <TableCell className="align-top whitespace-nowrap text-xs tabular-nums xl:text-sm">
+                        {formatDetectedAt(incident.detectedAt)}
                       </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex flex-wrap justify-end gap-1.5">
+                      <TableCell className="w-[18%] text-right align-top">
+                        <div className="ml-auto flex max-w-[240px] flex-wrap justify-end gap-1.5">
                           <Button
                             size="sm"
                             variant="outline"
@@ -449,5 +449,12 @@ function SeverityBadge({ severity }: { severity: IncidentSeverity }) {
     return <Badge className="bg-primary/15 text-primary hover:bg-primary/20">Medium</Badge>;
   }
   return <Badge variant="outline">Low</Badge>;
+}
+
+function formatDetectedAt(value: string): string {
+  return new Date(value).toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
 }
 

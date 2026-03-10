@@ -126,7 +126,10 @@ export function useAuth() {
 
 function applyPlanOverride(user: AuthUser | null): AuthUser | null {
   if (!user) return null;
-  const override = window.localStorage.getItem(PLAN_OVERRIDE_KEY) ?? "pro";
+  const override = window.localStorage.getItem(PLAN_OVERRIDE_KEY);
+  if (!override) {
+    return user;
+  }
   return {
     ...user,
     plan: normalizePlan(override),

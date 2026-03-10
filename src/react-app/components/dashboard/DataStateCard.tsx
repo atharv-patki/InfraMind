@@ -17,6 +17,9 @@ type DataStateCardProps = {
 };
 
 export function DataStateCard({ state, title, detail, onRetry }: DataStateCardProps) {
+  const accessibilityRole = state === "error" || state === "permission" ? "alert" : "status";
+  const liveMode = state === "error" || state === "permission" ? "assertive" : "polite";
+
   const icon =
     state === "loading" ? (
       <Loader2 className="w-5 h-5 animate-spin mx-auto text-muted-foreground" />
@@ -34,7 +37,7 @@ export function DataStateCard({ state, title, detail, onRetry }: DataStateCardPr
 
   return (
     <Card>
-      <CardContent className="py-8 text-center">
+      <CardContent className="py-8 text-center" role={accessibilityRole} aria-live={liveMode}>
         {icon}
         <p className="mt-3 text-sm font-medium">{title}</p>
         <p className="text-xs text-muted-foreground mt-1">{detail}</p>

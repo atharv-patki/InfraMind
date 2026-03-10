@@ -1,26 +1,34 @@
 # SaaS Readiness Checklist
 
 ## Billing and Plans
-- [ ] Payment provider integration.
-- [ ] Plan mapping in backend and frontend.
-- [ ] Webhook handling for subscription events.
+- [x] Local billing adapter endpoints (`GET/POST /api/billing/subscription`) for backend contract stability.
+- [x] Plan mapping in backend and frontend (starter/pro/enterprise).
+- [x] Stripe webhook sync endpoint implemented (`POST /api/billing/webhooks/stripe`) with signature verification support.
+- [ ] Production payment provider account configuration and webhook secret rollout.
 
 ## Plan Enforcement
-- [ ] Resource monitoring caps by plan.
-- [ ] Alerts/month caps by plan.
+- [x] Resource monitoring caps by plan.
+- [x] Alerts/month caps by plan.
 - [ ] User/workspace caps by plan.
 
 ## Usage Metering
-- [ ] Track monitored resources per workspace.
-- [ ] Track alert volume and delivery usage.
-- [ ] Trigger quota warning notifications.
+- [x] Track monitored resources and key monthly usage counters.
+- [x] Track alert/export/notification-test usage counters.
+- [x] Expose usage + remaining quotas via `GET /api/usage/me`.
+- [x] Generate and persist quota warning/critical events (`quota_alert_events`) and expose `GET /api/usage/alerts`.
+- [x] Quota alerts trigger outbound notification dispatch path through channel provider adapters.
+- [ ] Configure production channel credentials and targets.
 
 ## Tenant Isolation
-- [ ] Workspace-scoped query enforcement.
-- [ ] Cross-tenant access tests.
-- [ ] Incident/audit exports scoped by workspace.
+- [x] Workspace role checks enforced for dashboard read/write API modules.
+- [x] Tenant validation endpoint added (`GET /api/tenancy/validation`) for duplicate/orphan integrity checks.
+- [x] Adversarial tenant-isolation unit tests added for duplicate/orphan/fanout patterns.
+- [ ] Cross-tenant API attack test suite across authenticated multi-tenant fixtures.
+- [ ] Incident/audit export strict workspace partition hardening for production audits.
 
 ## Legal and Compliance
-- [ ] Privacy policy final legal review.
-- [ ] Terms of service final legal review.
-- [ ] DPA template and process ready.
+- [x] Draft Privacy policy added.
+- [x] Draft Terms of service added.
+- [x] Legal sign-off checklist artifact added (`docs/legal/legal-signoff-checklist.md`).
+- [x] Draft DPA added.
+- [ ] Legal approval/signature for Privacy/Terms/DPA.

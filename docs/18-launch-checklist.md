@@ -11,6 +11,9 @@ Legend:
 - [x] API contract and OpenAPI discovery endpoint published.
 - [x] Incident response runbook is complete.
 - [x] Auto-recovery playbook runbook is complete.
+- [x] Backend deploy + rollback runbook is complete.
+- [x] Release gates checklist documented (`docs/devops/production-release-gates.md`).
+- [x] Legal sign-off checklist drafted (`docs/legal/legal-signoff-checklist.md`).
 
 ## Operations Readiness
 - [x] On-call rotation and escalation matrix defined.
@@ -26,8 +29,10 @@ Legend:
 
 ## Release Safety
 - [ ] Staging soak test passed.
-- [ ] Backup and restore test passed.
-- [ ] Rollback procedure tested and documented.
+- [x] Local backup/restore drill executed and documented.
+- [ ] Staging/prod backup and restore test passed.
+- [x] Rollback procedure documented.
+- [ ] Rollback procedure tested.
 - [ ] Go-live checklist signed by engineering, product, and operations.
 
 ## Final Sign-Off

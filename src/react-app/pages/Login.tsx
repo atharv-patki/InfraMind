@@ -21,7 +21,7 @@ export default function Login() {
 
   const nextPath = getSafeNextPath(searchParams.get("next"), "/app/overview");
   const isFreshRegistration = searchParams.get("registered") === "1";
-  const welcomeStatus = searchParams.get("welcome");
+  const isLoggedOut = searchParams.get("logged_out") === "1";
   const signupPlan = normalizePlan(searchParams.get("plan"));
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -34,7 +34,11 @@ export default function Login() {
     try {
       setIsSubmitting(true);
       setError("");
-      window.localStorage.setItem(PLAN_OVERRIDE_KEY, "pro");
+      if (isFreshRegistration) {
+        window.localStorage.setItem(PLAN_OVERRIDE_KEY, signupPlan);
+      } else {
+        window.localStorage.removeItem(PLAN_OVERRIDE_KEY);
+      }
       await login({ email: email.trim(), password });
       setIsRedirecting(true);
       await new Promise((resolve) => window.setTimeout(resolve, 650));
@@ -51,7 +55,12 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-background flex relative">
       {isRedirecting ? (
-        <div className="absolute inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center">
+        <div
+          className="absolute inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center"
+          role="status"
+          aria-live="polite"
+          aria-label="Signing in and loading dashboard"
+        >
           <div className="text-center">
             <div className="w-12 h-12 rounded-xl bg-primary/15 text-primary flex items-center justify-center mx-auto">
               <Loader2 className="w-6 h-6 animate-spin" />
@@ -120,28 +129,25 @@ export default function Login() {
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-5" aria-busy={isSubmitting || isFetching}>
             {isFreshRegistration ? (
-              <div className="space-y-1">
-                <p className="text-sm text-success">
+              <div className="space-y-1" aria-live="polite">
+                <p className="text-sm text-success" role="status">
                   {getPlanLabel(signupPlan)} account created successfully. Please sign in.
                 </p>
-                {welcomeStatus === "queued" ? (
-                  <p className="text-xs text-muted-foreground">
-                    Welcome email queued for delivery. Check inbox and spam.
-                  </p>
-                ) : null}
-                {welcomeStatus === "disabled" ? (
-                  <p className="text-xs text-warning">
-                    Welcome email is not configured in this environment yet.
-                  </p>
-                ) : null}
               </div>
             ) : null}
 
+            {isLoggedOut ? (
+              <p className="text-sm text-muted-foreground" role="status" aria-live="polite">
+                You have been signed out successfully.
+              </p>
+            ) : null}
+
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+              <label htmlFor="login-email" className="text-sm font-medium">Email</label>
               <Input
+                id="login-email"
                 type="email"
                 autoComplete="email"
                 value={email}
@@ -151,8 +157,9 @@ export default function Login() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Password</label>
+              <label htmlFor="login-password" className="text-sm font-medium">Password</label>
               <Input
+                id="login-password"
                 type="password"
                 autoComplete="current-password"
                 value={password}
@@ -161,12 +168,17 @@ export default function Login() {
               />
             </div>
 
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            {error ? (
+              <p className="text-sm text-destructive" role="alert" aria-live="assertive">
+                {error}
+              </p>
+            ) : null}
 
             <Button
               type="submit"
               disabled={isSubmitting || isFetching || isPending}
               className="w-full h-11"
+              aria-label="Sign in"
             >
               {isSubmitting || isFetching ? (
                 <>
